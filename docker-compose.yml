@@ -1,0 +1,30 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: opdbot
+      POSTGRES_USER: opdbot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secret}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opdbot"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  bot:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://opdbot:${POSTGRES_PASSWORD:-secret}@postgres:5432/opdbot
+    env_file: .env
+    volumes:
+      - ./storage:/app/storage
+      - ./templates:/app/templates
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

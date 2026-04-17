@@ -1,0 +1,131 @@
+from datetime import datetime, timedelta
+
+from aiogram import F, Router
+from aiogram.fsm.context import FSMContext
+from aiogram.types import CallbackQuery, Message
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from opdbot.bot import texts
+from opdbot.bot.keyboards.hr import slot_kind_keyboard
+from opdbot.bot.states.hr import HrSlotStates
+from opdbot.db.models import SlotKind, UserRole
+from opdbot.db.repo.slots import create_slot, deactivate_slot, list_slots
+
+router = Router(name="hr_slots")
+
+SLOT_KIND_MAP = {
+    "interview": SlotKind.interview,
+    "medical": SlotKind.medical,
+    "training": SlotKind.training,
+}
+
+
+@router.message(F.text == "📅 Слоты")
+async def hr_slots_menu(message: Message, role: UserRole, session: AsyncSession) -> None:
+    if role not in (UserRole.hr, UserRole.admin):
+        return
+
+    slots = await list_slots(session)
+    lines = []
+    for slot in slots[:20]:
+        kind_label = texts.SLOT_KIND_LABELS.get(slot.kind.value, slot.kind.value)
+        dt = slot.starts_at.strftime("%d.%m.%Y %H:%M")
+        free = slot.capacity - slot.booked_count
+        lines.append(f"{kind_label}: {dt} (мест: {free}/{slot.capacity}) [#{slot.id}]")
+
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    builder = InlineKeyboardBuilder()
+    builder.button(text="➕ Создать слот", callback_data="hr:slot:create")
+    for slot in slots[:10]:
+        builder.button(text=f"❌ Удалить #{slot.id}", callback_data=f"hr:slot:del:{slot.id}")
+    builder.adjust(1)
+
+    text = "Активные слоты:\n" + ("\n".join(lines) if lines else "Нет активных слотов.")
+    await message.answer(text, reply_markup=builder.as_markup())
+
+
+@router.callback_query(F.data == "hr:slot:create")
+async def hr_slot_create_start(
+    callback: CallbackQuery, state: FSMContext, role: UserRole
+) -> None:
+    if role not in (UserRole.hr, UserRole.admin):
+        return
+    await state.set_state(HrSlotStates.waiting_kind)
+    if callback.message:
+        await callback.message.edit_text("Выберите тип слота:", reply_markup=slot_kind_keyboard())
+    await callback.answer()
+
+
+@router.callback_query(HrSlotStates.waiting_kind, F.data.startswith("hr:slot_kind:"))
+async def hr_slot_kind_selected(callback: CallbackQuery, state: FSMContext) -> None:
+    kind_str = callback.data.split(":")[2]  # type: ignore[union-attr]
+    await state.update_data(slot_kind=kind_str)
+    await state.set_state(HrSlotStates.waiting_date)
+    if callback.message:
+        await callback.message.edit_text(texts.HR_ASK_SLOT_DATE)
+    await callback.answer()
+
+
+@router.message(HrSlotStates.waiting_date)
+async def hr_slot_date(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    try:
+        dt = datetime.strptime(text, "%d.%m.%Y %H:%M")
+    except ValueError:
+        await message.answer("Неверный формат. Введите дату и время в формате ДД.ММ.ГГГГ ЧЧ:ММ:")
+        return
+    await state.update_data(slot_starts_at=dt.isoformat())
+    await state.set_state(HrSlotStates.waiting_duration)
+    await message.answer(texts.HR_ASK_SLOT_DURATION)
+
+
+@router.message(HrSlotStates.waiting_duration)
+async def hr_slot_duration(message: Message, state: FSMContext) -> None:
+    try:
+        minutes = int((message.text or "").strip())
+        if minutes <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("Введите положительное число минут:")
+        return
+    await state.update_data(slot_duration_minutes=minutes)
+    await state.set_state(HrSlotStates.waiting_capacity)
+    await message.answer(texts.HR_ASK_SLOT_CAPACITY)
+
+
+@router.message(HrSlotStates.waiting_capacity)
+async def hr_slot_capacity(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    try:
+        capacity = int((message.text or "").strip())
+        if capacity <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("Введите положительное число:")
+        return
+
+    data = await state.get_data()
+    kind_str: str = data["slot_kind"]
+    starts_at = datetime.fromisoformat(data["slot_starts_at"])
+    duration = int(data["slot_duration_minutes"])
+    ends_at = starts_at + timedelta(minutes=duration)
+    kind = SLOT_KIND_MAP[kind_str]
+
+    slot = await create_slot(session, kind=kind, starts_at=starts_at, ends_at=ends_at, capacity=capacity)
+    kind_label = texts.SLOT_KIND_LABELS.get(kind_str, kind_str)
+    dt_str = starts_at.strftime("%d.%m.%Y %H:%M")
+    await message.answer(texts.HR_SLOT_CREATED.format(kind=kind_label, dt=dt_str))
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("hr:slot:del:"))
+async def hr_slot_deactivate(
+    callback: CallbackQuery, session: AsyncSession, role: UserRole
+) -> None:
+    if role not in (UserRole.hr, UserRole.admin):
+        return
+
+    slot_id = int(callback.data.split(":")[3])  # type: ignore[union-attr]
+    await deactivate_slot(session, slot_id)
+    if callback.message:
+        await callback.message.edit_text(f"Слот #{slot_id} деактивирован.")
+    await callback.answer()
