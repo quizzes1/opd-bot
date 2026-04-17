@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from opdbot.bot import texts
@@ -33,7 +34,6 @@ async def hr_slots_menu(message: Message, role: UserRole, session: AsyncSession)
         free = slot.capacity - slot.booked_count
         lines.append(f"{kind_label}: {dt} (мест: {free}/{slot.capacity}) [#{slot.id}]")
 
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
     builder = InlineKeyboardBuilder()
     builder.button(text="➕ Создать слот", callback_data="hr:slot:create")
     for slot in slots[:10]:

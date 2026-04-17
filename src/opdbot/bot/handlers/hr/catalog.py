@@ -1,6 +1,7 @@
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,7 +20,6 @@ async def hr_catalog_menu(message: Message, session: AsyncSession, role: UserRol
     result = await session.execute(select(Goal).where(Goal.is_active.is_(True)))
     goals = list(result.scalars().all())
 
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
     builder = InlineKeyboardBuilder()
     for goal in goals:
         builder.button(text=goal.title, callback_data=f"hr:catalog:goal:{goal.id}")
@@ -37,7 +37,6 @@ async def hr_catalog_goal_docs(
     goal_id = int(callback.data.split(":")[3])  # type: ignore[union-attr]
     requirements = await get_requirements_for_goal(session, goal_id)
 
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
     builder = InlineKeyboardBuilder()
     for req in requirements:
         req_label = f"{req.title} ({'обяз.' if req.is_required else 'необяз.'})"
@@ -150,7 +149,6 @@ async def hr_catalog_req_detail(
         f"Обязателен: {'да' if req.is_required else 'нет'}\n"
     )
 
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
     builder = InlineKeyboardBuilder()
     builder.button(
         text="🗑 Удалить",
@@ -191,7 +189,6 @@ async def hr_catalog_back(callback: CallbackQuery, session: AsyncSession) -> Non
     result = await session.execute(select(Goal).where(Goal.is_active.is_(True)))
     goals = list(result.scalars().all())
 
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
     builder = InlineKeyboardBuilder()
     for goal in goals:
         builder.button(text=goal.title, callback_data=f"hr:catalog:goal:{goal.id}")

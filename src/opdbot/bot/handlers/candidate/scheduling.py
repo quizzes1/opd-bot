@@ -75,7 +75,7 @@ async def handle_interview_slot(
         texts.SLOT_BOOKED.format(kind="собеседование", dt=dt_str),
         parse_mode="HTML",
     )
-    await callback.message.answer(texts.MAIN_MENU, reply_markup=candidate_main_menu())  # type: ignore[union-attr]
+    await callback.message.answer(texts.MAIN_MENU, reply_markup=candidate_main_menu(True))  # type: ignore[union-attr]
     await callback.answer()
 
 
@@ -107,5 +107,5 @@ async def handle_training_slot(
         texts.SLOT_BOOKED.format(kind="обучение", dt=dt_str),
         parse_mode="HTML",
     )
-    await callback.message.answer(texts.MAIN_MENU, reply_markup=candidate_main_menu())  # type: ignore[union-attr]
+    await callback.message.answer(texts.MAIN_MENU, reply_markup=candidate_main_menu(True))  # type: ignore[union-attr]
     await callback.answer()

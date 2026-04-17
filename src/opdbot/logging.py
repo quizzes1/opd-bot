@@ -1,5 +1,7 @@
 import sys
+
 from loguru import logger
+
 from opdbot.config import settings
 
 
@@ -8,11 +10,17 @@ def setup_logging() -> None:
     logger.add(
         sys.stderr,
         level=settings.log_level,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+        format=(
+            "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+            "<level>{level: <8}</level> | "
+            "<cyan>{name}</cyan>:<cyan>{line}</cyan> - "
+            "<level>{message}</level>"
+        ),
         colorize=True,
     )
+    settings.log_dir.mkdir(parents=True, exist_ok=True)
     logger.add(
-        "logs/bot.log",
+        settings.log_dir / "bot.log",
         level="DEBUG",
         rotation="10 MB",
         retention="7 days",

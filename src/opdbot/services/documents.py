@@ -1,102 +1,77 @@
+from __future__ import annotations
+
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from loguru import logger
+from docxtpl import DocxTemplate
 
 from opdbot.config import settings
 
-try:
-    from docxtpl import DocxTemplate
-    DOCXTPL_AVAILABLE = True
-except ImportError:
-    DOCXTPL_AVAILABLE = False
-    logger.warning("docxtpl not installed — document generation disabled")
+if TYPE_CHECKING:
+    from opdbot.db.models import Application
 
 
-def _get_output_path(user_id: int, application_id: int, kind: str) -> Path:
+def _get_output_path(user_id: int, application_id: int, kind: str) -> tuple[Path, Path]:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = Path(settings.storage_root) / str(user_id) / str(application_id) / "generated"
+    root = Path(settings.storage_root).resolve()
+    out_dir = root / str(user_id) / str(application_id) / "generated"
     out_dir.mkdir(parents=True, exist_ok=True)
-    return out_dir / f"{kind}_{ts}.docx"
+    absolute = out_dir / f"{kind}_{ts}.docx"
+    return absolute, absolute.relative_to(root)
 
 
-def _render_template(template_name: str, context: dict, output_path: Path) -> Path:
-    if not DOCXTPL_AVAILABLE:
-        raise RuntimeError("docxtpl is not installed")
-
+def _render_template(template_name: str, context: dict, output_path: Path) -> None:
     template_path = Path(settings.templates_root) / template_name
     if not template_path.exists():
         raise FileNotFoundError(f"Template not found: {template_path}")
-
     doc = DocxTemplate(template_path)
     doc.render(context)
     doc.save(output_path)
-    return output_path
 
 
-async def render_application(app: object) -> Path:
-    user = getattr(app, "user", None)
-    goal = getattr(app, "goal", None)
-
+async def render_application(app: "Application") -> Path:
     context = {
-        "full_name": getattr(user, "full_name", "") or "",
-        "phone": getattr(user, "phone", "") or "",
-        "goal_title": getattr(goal, "title", "") if goal else "",
-        "application_id": getattr(app, "id", ""),
+        "full_name": app.user.full_name or "",
+        "phone": app.user.phone or "",
+        "goal_title": app.goal.title,
+        "application_id": app.id,
         "date": datetime.now().strftime("%d.%m.%Y"),
     }
-
-    output_path = _get_output_path(
-        getattr(user, "id", 0) if user else 0,
-        getattr(app, "id", 0),
-        "application_form",
-    )
-    return _render_template("application.docx", context, output_path)
+    absolute, relative = _get_output_path(app.user.id, app.id, "application_form")
+    _render_template("application.docx", context, absolute)
+    return relative
 
 
-async def render_medical_referral(app: object) -> Path:
-    user = getattr(app, "user", None)
-    goal = getattr(app, "goal", None)
-
+async def render_medical_referral(app: "Application") -> Path:
     context = {
-        "full_name": getattr(user, "full_name", "") or "",
-        "phone": getattr(user, "phone", "") or "",
-        "goal_title": getattr(goal, "title", "") if goal else "",
-        "application_id": getattr(app, "id", ""),
+        "full_name": app.user.full_name or "",
+        "phone": app.user.phone or "",
+        "goal_title": app.goal.title,
+        "application_id": app.id,
         "date": datetime.now().strftime("%d.%m.%Y"),
     }
-
-    output_path = _get_output_path(
-        getattr(user, "id", 0) if user else 0,
-        getattr(app, "id", 0),
-        "medical_referral",
-    )
-    return _render_template("medical_referral.docx", context, output_path)
+    absolute, relative = _get_output_path(app.user.id, app.id, "medical_referral")
+    _render_template("medical_referral.docx", context, absolute)
+    return relative
 
 
 async def render_practice_characteristic(
-    app: object,
+    app: "Application",
     supervisor: str,
     topic: str,
     period_from: datetime,
     period_to: datetime,
 ) -> Path:
-    user = getattr(app, "user", None)
-    goal = getattr(app, "goal", None)
-
     context = {
-        "full_name": getattr(user, "full_name", "") or "",
-        "goal_title": getattr(goal, "title", "") if goal else "",
+        "full_name": app.user.full_name or "",
+        "goal_title": app.goal.title,
         "supervisor": supervisor,
         "topic": topic,
         "period_from": period_from.strftime("%d.%m.%Y"),
         "period_to": period_to.strftime("%d.%m.%Y"),
         "date": datetime.now().strftime("%d.%m.%Y"),
     }
-
-    output_path = _get_output_path(
-        getattr(user, "id", 0) if user else 0,
-        getattr(app, "id", 0),
-        "practice_characteristic",
-    )
-    return _render_template("practice_characteristic.docx", context, output_path)
+    absolute, relative = _get_output_path(app.user.id, app.id, "practice_characteristic")
+    _render_template("practice_characteristic.docx", context, absolute)
+    return relative

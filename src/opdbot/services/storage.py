@@ -11,6 +11,10 @@ def _sanitize(name: str) -> str:
     return re.sub(r"[^\w.\-]", "_", name)
 
 
+def storage_root() -> Path:
+    return Path(settings.storage_root).resolve()
+
+
 async def save_tg_file(
     bot: Bot,
     file_id: str,
@@ -23,16 +27,19 @@ async def save_tg_file(
     ext = Path(filename).suffix or ".bin"
     safe_name = f"{_sanitize(req_code)}_{ts}{ext}"
 
-    dest_dir = Path(settings.storage_root) / str(user_id) / str(application_id)
+    root = storage_root()
+    dest_dir = root / str(user_id) / str(application_id)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / safe_name
 
     tg_file = await bot.get_file(file_id)
     await bot.download_file(tg_file.file_path, destination=dest)  # type: ignore[arg-type]
 
-    relative = dest.relative_to(settings.storage_root)
-    return relative
+    return dest.relative_to(root)
 
 
-def get_absolute_path(relative: str) -> Path:
-    return Path(settings.storage_root) / relative
+def get_absolute_path(relative: str | Path) -> Path:
+    rel = Path(relative)
+    if rel.is_absolute():
+        return rel
+    return storage_root() / rel

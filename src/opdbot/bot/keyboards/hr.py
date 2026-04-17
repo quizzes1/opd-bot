@@ -32,6 +32,7 @@ def document_actions_keyboard(doc: Document) -> InlineKeyboardMarkup:
 
 def applications_filter_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
+    builder.button(text="Активные", callback_data="hr:filter:active")
     builder.button(text="Все", callback_data="hr:filter:all")
     builder.button(text="На проверке", callback_data="hr:filter:docs_submitted")
     builder.button(text="Собеседование", callback_data="hr:filter:interview_scheduled")

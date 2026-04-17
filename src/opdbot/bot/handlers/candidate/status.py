@@ -1,6 +1,8 @@
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from opdbot.bot import texts
@@ -9,11 +11,29 @@ from opdbot.bot.handlers.candidate.scheduling import (
     start_interview_scheduling,
     start_training_scheduling,
 )
-from opdbot.db.models import ApplicationStatus
-from opdbot.db.repo.applications import get_user_applications
+from opdbot.bot.keyboards.goals import goals_keyboard
+from opdbot.bot.keyboards.main_menu import candidate_main_menu
+from opdbot.bot.states.candidate import OnboardingStates
+from opdbot.db.models import ApplicationStatus, AuditLog, Goal
+from opdbot.db.repo.applications import (
+    get_active_application,
+    get_user_applications,
+    update_application_status,
+)
 from opdbot.db.repo.users import get_user_by_tg_id
 
 router = Router(name="status")
+
+
+def _app_row_keyboard(app_id: int, status: ApplicationStatus) -> InlineKeyboardBuilder:
+    builder = InlineKeyboardBuilder()
+    if status not in (
+        ApplicationStatus.approved,
+        ApplicationStatus.rejected,
+        ApplicationStatus.cancelled,
+    ):
+        builder.button(text="❌ Отменить заявку", callback_data=f"candidate:cancel:{app_id}")
+    return builder
 
 
 @router.message(F.text == "📋 Мои заявки")
@@ -32,7 +52,6 @@ async def my_applications(message: Message, session: AsyncSession) -> None:
         await message.answer(texts.NO_APPLICATIONS)
         return
 
-    lines = []
     for app in apps:
         status_label = texts.STATUS_LABELS.get(app.status.value, app.status.value)
         goal_label = app.goal.title if app.goal else "—"
@@ -43,28 +62,63 @@ async def my_applications(message: Message, session: AsyncSession) -> None:
         if app.training_at:
             training_line = f"Обучение: {app.training_at.strftime('%d.%m.%Y %H:%M')}\n"
 
-        lines.append(
-            texts.APPLICATION_CARD.format(
-                app_id=app.id,
-                goal=goal_label,
-                status=status_label,
-                created_at=app.created_at.strftime("%d.%m.%Y"),
-                interview_line=interview_line,
-                training_line=training_line,
-            )
+        text = texts.APPLICATION_CARD.format(
+            app_id=app.id,
+            goal=goal_label,
+            status=status_label,
+            created_at=app.created_at.strftime("%d.%m.%Y"),
+            interview_line=interview_line,
+            training_line=training_line,
         )
+        kb = _app_row_keyboard(app.id, app.status)
+        markup = kb.as_markup() if kb.export() else None
+        await message.answer(text, parse_mode="HTML", reply_markup=markup)
 
-    await message.answer("\n\n".join(lines), parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("candidate:cancel:"))
+async def cancel_application(
+    callback: CallbackQuery, session: AsyncSession
+) -> None:
+    app_id = int(callback.data.split(":")[2])  # type: ignore[union-attr]
+    tg_user = callback.from_user
+    if tg_user is None:
+        return
+
+    user = await get_user_by_tg_id(session, tg_user.id)
+    if not user:
+        await callback.answer("Пользователь не найден.")
+        return
+
+    apps = await get_user_applications(session, user.id)
+    app = next((a for a in apps if a.id == app_id), None)
+    if not app:
+        await callback.answer("Заявка не найдена.")
+        return
+    if app.status in (
+        ApplicationStatus.approved,
+        ApplicationStatus.rejected,
+        ApplicationStatus.cancelled,
+    ):
+        await callback.answer("Эту заявку нельзя отменить.")
+        return
+
+    await update_application_status(session, app, ApplicationStatus.cancelled)
+    session.add(
+        AuditLog(
+            application_id=app_id,
+            actor_tg_id=tg_user.id,
+            event="application_cancelled_by_candidate",
+        )
+    )
+    await callback.answer("Заявка отменена.")
+    if callback.message:
+        await callback.message.edit_text(
+            texts.APPLICATION_CANCELLED.format(app_id=app_id),
+        )
 
 
 @router.message(F.text == "📄 Подать заявку")
 async def new_application(message: Message, state: FSMContext, session: AsyncSession) -> None:
-    from sqlalchemy import select
-    from opdbot.db.models import Goal
-    from opdbot.bot.states.candidate import OnboardingStates
-    from opdbot.bot.keyboards.goals import goals_keyboard
-    from opdbot.db.repo.users import get_user_by_tg_id
-
     tg_user = message.from_user
     if tg_user is None:
         return
@@ -75,76 +129,52 @@ async def new_application(message: Message, state: FSMContext, session: AsyncSes
         await message.answer(texts.WELCOME)
         return
 
+    existing = await get_active_application(session, user.id)
+    if existing is not None:
+        await message.answer(
+            texts.ACTIVE_APPLICATION_EXISTS.format(app_id=existing.id),
+            reply_markup=candidate_main_menu(True),
+        )
+        return
+
     result = await session.execute(select(Goal).where(Goal.is_active.is_(True)))
     goals = list(result.scalars().all())
     await state.set_state(OnboardingStates.waiting_goal)
     await message.answer(texts.ASK_GOAL, reply_markup=goals_keyboard(goals))
 
 
-@router.message(F.text == "📅 Записаться на собеседование")
-async def schedule_interview(message: Message, state: FSMContext, session: AsyncSession) -> None:
+async def _active_app(session: AsyncSession, message: Message):
     tg_user = message.from_user
     if tg_user is None:
-        return
-
+        return None
     user = await get_user_by_tg_id(session, tg_user.id)
     if not user:
+        return None
+    return await get_active_application(session, user.id)
+
+
+@router.message(F.text == "📅 Записаться на собеседование")
+async def schedule_interview(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    app = await _active_app(session, message)
+    if app is None:
         await message.answer(texts.ERROR_NO_ACTIVE_APPLICATION)
         return
-
-    apps = await get_user_applications(session, user.id)
-    active = [
-        a for a in apps
-        if a.status not in (ApplicationStatus.approved, ApplicationStatus.rejected, ApplicationStatus.cancelled)
-    ]
-    if not active:
-        await message.answer(texts.ERROR_NO_ACTIVE_APPLICATION)
-        return
-
-    await start_interview_scheduling(message, state, session, active[0].id)
+    await start_interview_scheduling(message, state, session, app.id)
 
 
 @router.message(F.text == "🎓 Записаться на обучение")
 async def schedule_training(message: Message, state: FSMContext, session: AsyncSession) -> None:
-    tg_user = message.from_user
-    if tg_user is None:
-        return
-
-    user = await get_user_by_tg_id(session, tg_user.id)
-    if not user:
+    app = await _active_app(session, message)
+    if app is None:
         await message.answer(texts.ERROR_NO_ACTIVE_APPLICATION)
         return
-
-    apps = await get_user_applications(session, user.id)
-    active = [
-        a for a in apps
-        if a.status not in (ApplicationStatus.approved, ApplicationStatus.rejected, ApplicationStatus.cancelled)
-    ]
-    if not active:
-        await message.answer(texts.ERROR_NO_ACTIVE_APPLICATION)
-        return
-
-    await start_training_scheduling(message, state, session, active[0].id)
+    await start_training_scheduling(message, state, session, app.id)
 
 
 @router.message(F.text == "🔄 Изменить документы")
 async def change_documents(message: Message, state: FSMContext, session: AsyncSession) -> None:
-    tg_user = message.from_user
-    if tg_user is None:
-        return
-
-    user = await get_user_by_tg_id(session, tg_user.id)
-    if not user:
+    app = await _active_app(session, message)
+    if app is None:
         await message.answer(texts.ERROR_NO_ACTIVE_APPLICATION)
         return
-
-    apps = await get_user_applications(session, user.id)
-    active = [
-        a for a in apps
-        if a.status not in (ApplicationStatus.approved, ApplicationStatus.rejected, ApplicationStatus.cancelled)
-    ]
-    if not active:
-        await message.answer(texts.ERROR_NO_ACTIVE_APPLICATION)
-        return
-
-    await start_doc_upload(message, state, session, active[0].id)
+    await start_doc_upload(message, state, session, app.id)

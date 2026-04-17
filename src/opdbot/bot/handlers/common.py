@@ -9,6 +9,7 @@ from opdbot.bot.keyboards.main_menu import candidate_main_menu, hr_main_menu
 from opdbot.bot.states.candidate import OnboardingStates
 from opdbot.config import settings
 from opdbot.db.models import UserRole
+from opdbot.db.repo.applications import get_active_application
 from opdbot.db.repo.users import get_or_create_user, set_user_role
 
 router = Router(name="common")
@@ -28,12 +29,20 @@ async def cmd_start(message: Message, state: FSMContext, session: AsyncSession, 
         full_name=tg_user.full_name,
     )
 
+    if tg_user.id in settings.superadmin_tg_ids and user.role != UserRole.admin:
+        user.role = UserRole.admin
+        await session.flush()
+        role = UserRole.admin
+
     if role in (UserRole.hr, UserRole.admin):
         await message.answer(texts.HR_WELCOME, reply_markup=hr_main_menu())
         return
 
     if user.full_name and user.phone:
-        await message.answer(texts.MAIN_MENU, reply_markup=candidate_main_menu())
+        has_active = await get_active_application(session, user.id) is not None
+        await message.answer(
+            texts.MAIN_MENU, reply_markup=candidate_main_menu(has_active)
+        )
         return
 
     if not user.full_name:
@@ -50,9 +59,24 @@ async def cmd_help(message: Message) -> None:
 
 
 @router.message(Command("cancel"))
-async def cmd_cancel(message: Message, state: FSMContext, role: UserRole) -> None:
+async def cmd_cancel(
+    message: Message, state: FSMContext, session: AsyncSession, role: UserRole
+) -> None:
     await state.clear()
-    kb = hr_main_menu() if role in (UserRole.hr, UserRole.admin) else candidate_main_menu()
+    if role in (UserRole.hr, UserRole.admin):
+        kb = hr_main_menu()
+    else:
+        tg_user = message.from_user
+        has_active = False
+        if tg_user is not None:
+            user, _ = await get_or_create_user(
+                session,
+                tg_id=tg_user.id,
+                tg_username=tg_user.username,
+                full_name=tg_user.full_name,
+            )
+            has_active = await get_active_application(session, user.id) is not None
+        kb = candidate_main_menu(has_active)
     await message.answer(texts.CANCELLED, reply_markup=kb)
 
 

@@ -1,5 +1,3 @@
-import re
-
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -11,12 +9,11 @@ from opdbot.bot.keyboards.goals import goals_keyboard
 from opdbot.bot.keyboards.main_menu import candidate_main_menu
 from opdbot.bot.states.candidate import OnboardingStates
 from opdbot.db.models import Goal
-from opdbot.db.repo.applications import create_application
+from opdbot.db.repo.applications import create_application, get_active_application
 from opdbot.db.repo.users import get_user_by_tg_id, update_user
+from opdbot.utils.validators import validate_phone
 
 router = Router(name="onboarding")
-
-PHONE_RE = re.compile(r"^\+?[78]?\d{10}$")
 
 
 @router.message(OnboardingStates.waiting_full_name)
@@ -40,8 +37,8 @@ async def handle_full_name(message: Message, state: FSMContext, session: AsyncSe
 
 @router.message(OnboardingStates.waiting_phone)
 async def handle_phone(message: Message, state: FSMContext, session: AsyncSession) -> None:
-    phone = (message.text or "").strip().replace(" ", "").replace("-", "")
-    if not PHONE_RE.match(phone):
+    phone = validate_phone(message.text or "")
+    if phone is None:
         await message.answer("Неверный формат номера. Попробуйте ещё раз (например: +79001234567).")
         return
 
@@ -73,6 +70,16 @@ async def handle_goal_selected(
         await callback.answer("Пользователь не найден.")
         return
 
+    existing = await get_active_application(session, user.id)
+    if existing is not None:
+        await state.clear()
+        await callback.message.edit_text(  # type: ignore[union-attr]
+            texts.ACTIVE_APPLICATION_EXISTS.format(app_id=existing.id),
+        )
+        await callback.message.answer(texts.MAIN_MENU, reply_markup=candidate_main_menu(True))  # type: ignore[union-attr]
+        await callback.answer()
+        return
+
     result = await session.execute(select(Goal).where(Goal.id == goal_id))
     goal = result.scalar_one_or_none()
     if not goal:
@@ -88,5 +95,5 @@ async def handle_goal_selected(
         texts.GOAL_SELECTED.format(goal=goal.title),
         parse_mode="HTML",
     )
-    await callback.message.answer(texts.MAIN_MENU, reply_markup=candidate_main_menu())  # type: ignore[union-attr]
+    await callback.message.answer(texts.MAIN_MENU, reply_markup=candidate_main_menu(True))  # type: ignore[union-attr]
     await callback.answer()

@@ -6,13 +6,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from opdbot.bot import texts
 from opdbot.bot.keyboards.hr import document_actions_keyboard, request_doc_keyboard
-from opdbot.bot.states.hr import HrMessageStates, HrRejectDocStates
+from opdbot.bot.states.hr import HrMessageStates, HrRejectDocStates, HrRequestDocStates
 from opdbot.db.models import (
-    AuditLog,
     ApplicationStatus,
+    AuditLog,
+    ChatMessage,
     Document,
+    DocumentRequirement,
     DocumentStatus,
-    Message as DbMessage,
     MessageFromRole,
     UserRole,
 )
@@ -22,8 +23,8 @@ from opdbot.db.repo.documents import (
     get_requirements_for_goal,
     update_document_status,
 )
-from opdbot.db.repo.users import get_user_by_tg_id
 from opdbot.services import notifications
+from opdbot.services.storage import get_absolute_path
 
 router = Router(name="hr_review")
 
@@ -46,10 +47,10 @@ async def hr_show_documents(
         return
 
     from aiogram.utils.keyboard import InlineKeyboardBuilder
+
     builder = InlineKeyboardBuilder()
     for doc in docs:
-        status_label = texts.STATUS_LABELS.get(doc.status.value, doc.status.value) if hasattr(texts, "STATUS_LABELS") else doc.status.value
-        req_title = doc.requirement.title if doc.requirement else doc.requirement_id
+        req_title = doc.requirement.title if doc.requirement else str(doc.requirement_id)
         builder.button(
             text=f"{req_title} — {doc.status.value}",
             callback_data=f"hr:doc:{doc.id}",
@@ -79,7 +80,6 @@ async def hr_document_card(
         await callback.answer("Документ не найден.")
         return
 
-    from sqlalchemy.orm import selectinload
     await session.refresh(doc, ["requirement"])
     req_title = doc.requirement.title if doc.requirement else "—"
     text = (
@@ -114,13 +114,19 @@ async def hr_download_document(
         await callback.answer("Документ не найден.")
         return
 
-    from pathlib import Path
-    from opdbot.config import settings
-
-    file_path = Path(settings.storage_root) / doc.file_path
+    file_path = get_absolute_path(doc.file_path)
     if not file_path.exists():
         await callback.answer("Файл не найден на диске.")
         return
+
+    session.add(
+        AuditLog(
+            application_id=doc.application_id,
+            actor_tg_id=callback.from_user.id if callback.from_user else None,
+            event="doc_downloaded",
+            details=f"doc_id={doc.id}",
+        )
+    )
 
     if callback.message:
         await callback.message.answer_document(FSInputFile(file_path))
@@ -144,13 +150,14 @@ async def hr_approve_document(
     await session.refresh(doc, ["requirement"])
     await update_document_status(session, doc, DocumentStatus.approved)
 
-    log = AuditLog(
-        application_id=doc.application_id,
-        actor_tg_id=callback.from_user.id if callback.from_user else None,
-        event="doc_approved",
-        details=f"doc_id={doc.id}",
+    session.add(
+        AuditLog(
+            application_id=doc.application_id,
+            actor_tg_id=callback.from_user.id if callback.from_user else None,
+            event="doc_approved",
+            details=f"doc_id={doc.id}",
+        )
     )
-    session.add(log)
 
     req_title = doc.requirement.title if doc.requirement else "—"
     if callback.message:
@@ -193,13 +200,14 @@ async def hr_reject_doc_reason(
     await session.refresh(doc, ["requirement", "application"])
     await update_document_status(session, doc, DocumentStatus.rejected, reject_reason=reason)
 
-    log = AuditLog(
-        application_id=doc.application_id,
-        actor_tg_id=message.from_user.id if message.from_user else None,
-        event="doc_rejected",
-        details=f"doc_id={doc.id}, reason={reason}",
+    session.add(
+        AuditLog(
+            application_id=doc.application_id,
+            actor_tg_id=message.from_user.id if message.from_user else None,
+            event="doc_rejected",
+            details=f"doc_id={doc.id}, reason={reason}",
+        )
     )
-    session.add(log)
 
     app = await get_application(session, doc.application_id)
     if app:
@@ -233,12 +241,13 @@ async def hr_approve_application(
         return
 
     await update_application_status(session, app, ApplicationStatus.approved)
-    log = AuditLog(
-        application_id=app_id,
-        actor_tg_id=callback.from_user.id if callback.from_user else None,
-        event="application_approved",
+    session.add(
+        AuditLog(
+            application_id=app_id,
+            actor_tg_id=callback.from_user.id if callback.from_user else None,
+            event="application_approved",
+        )
     )
-    session.add(log)
 
     await session.refresh(app, ["user"])
     await notifications.notify_user(
@@ -269,12 +278,13 @@ async def hr_reject_application(
         return
 
     await update_application_status(session, app, ApplicationStatus.rejected)
-    log = AuditLog(
-        application_id=app_id,
-        actor_tg_id=callback.from_user.id if callback.from_user else None,
-        event="application_rejected",
+    session.add(
+        AuditLog(
+            application_id=app_id,
+            actor_tg_id=callback.from_user.id if callback.from_user else None,
+            event="application_rejected",
+        )
     )
-    session.add(log)
 
     await session.refresh(app, ["user"])
     await notifications.notify_user(
@@ -293,7 +303,7 @@ async def hr_reject_application(
 
 @router.callback_query(F.data.startswith("hr:request_doc:"))
 async def hr_request_document(
-    callback: CallbackQuery, session: AsyncSession, role: UserRole
+    callback: CallbackQuery, state: FSMContext, session: AsyncSession, role: UserRole
 ) -> None:
     if role not in (UserRole.hr, UserRole.admin):
         return
@@ -305,6 +315,8 @@ async def hr_request_document(
         return
 
     requirements = await get_requirements_for_goal(session, app.goal_id)
+    await state.set_state(HrRequestDocStates.choosing_req)
+    await state.update_data(app_id=app_id)
     if callback.message:
         await callback.message.edit_text(
             "Выберите документ для запроса:",
@@ -313,16 +325,21 @@ async def hr_request_document(
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("hr:req_doc:"))
+@router.callback_query(HrRequestDocStates.choosing_req, F.data.startswith("hr:req_doc:"))
 async def hr_send_doc_request(
-    callback: CallbackQuery, session: AsyncSession, role: UserRole
+    callback: CallbackQuery, state: FSMContext, session: AsyncSession, role: UserRole
 ) -> None:
     if role not in (UserRole.hr, UserRole.admin):
         return
 
     req_id = int(callback.data.split(":")[2])  # type: ignore[union-attr]
-    from sqlalchemy.orm import selectinload
-    from opdbot.db.models import DocumentRequirement
+    data = await state.get_data()
+    app_id: int | None = data.get("app_id")
+    if app_id is None:
+        await callback.answer("Сессия устарела, повторите действие.")
+        await state.clear()
+        return
+
     result = await session.execute(
         select(DocumentRequirement).where(DocumentRequirement.id == req_id)
     )
@@ -331,39 +348,32 @@ async def hr_send_doc_request(
         await callback.answer("Требование не найдено.")
         return
 
-    # Find application from context - search recent apps
-    apps = await list_applications_by_goal(session, req.goal_id)
-    # We need to get the app ID from the conversation state — use message context
-    # For now, notify all candidates with docs_submitted status for this goal
-    for app in apps:
-        await session.refresh(app, ["user"])
-        msg_record = DbMessage(
+    app = await get_application(session, app_id)
+    if not app:
+        await callback.answer("Заявка не найдена.")
+        await state.clear()
+        return
+
+    await session.refresh(app, ["user"])
+    session.add(
+        ChatMessage(
             application_id=app.id,
             from_role=MessageFromRole.hr,
             requested_doc_code=req.code,
         )
-        session.add(msg_record)
-        await notifications.notify_user(
-            bot=callback.bot,  # type: ignore[arg-type]
-            tg_id=app.user.tg_id,
-            text=texts.NOTIFY_DOC_REQUESTED.format(app_id=app.id, title=req.title),
-        )
+    )
+    await notifications.notify_user(
+        bot=callback.bot,  # type: ignore[arg-type]
+        tg_id=app.user.tg_id,
+        text=texts.NOTIFY_DOC_REQUESTED.format(app_id=app.id, title=req.title),
+    )
 
     if callback.message:
-        await callback.message.edit_text(f"✅ Запрос документа «{req.title}» отправлен.")
+        await callback.message.edit_text(
+            f"✅ Запрос документа «{req.title}» отправлен кандидату по заявке #{app.id}."
+        )
+    await state.clear()
     await callback.answer()
-
-
-async def list_applications_by_goal(session: AsyncSession, goal_id: int) -> list:
-    from sqlalchemy.orm import selectinload
-    from opdbot.db.models import Application
-    from sqlalchemy import select as sa_select
-    result = await session.execute(
-        sa_select(Application)
-        .options(selectinload(Application.user))
-        .where(Application.goal_id == goal_id, Application.status == ApplicationStatus.docs_submitted)
-    )
-    return list(result.scalars().all())
 
 
 @router.callback_query(F.data.startswith("hr:message:"))
@@ -395,12 +405,13 @@ async def hr_message_send(
         await state.clear()
         return
 
-    msg_record = DbMessage(
-        application_id=app_id,
-        from_role=MessageFromRole.hr,
-        text=text,
+    session.add(
+        ChatMessage(
+            application_id=app_id,
+            from_role=MessageFromRole.hr,
+            text=text,
+        )
     )
-    session.add(msg_record)
 
     await session.refresh(app, ["user"])
     await notifications.notify_user(

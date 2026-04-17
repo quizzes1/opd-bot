@@ -3,21 +3,35 @@ from datetime import datetime
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, FSInputFile, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from opdbot.bot import texts
-from opdbot.bot.states.hr import HrCharacteristicStates
-from opdbot.db.models import GeneratedDocument, GeneratedDocumentKind, UserRole
-from opdbot.db.repo.applications import get_application
+from opdbot.bot.states.hr import HrCharacteristicStates, HrMedicalDateStates
+from opdbot.db.models import (
+    AuditLog,
+    GeneratedDocument,
+    GeneratedDocumentKind,
+    UserRole,
+)
+from opdbot.db.repo.applications import get_application, set_medical_date
 from opdbot.services import documents as doc_service
 from opdbot.services import notifications
+from opdbot.services.storage import get_absolute_path
 
 router = Router(name="hr_documents_gen")
+
+GEN_DOC_LABELS = {
+    GeneratedDocumentKind.application_form.value: "Заявление",
+    GeneratedDocumentKind.medical_referral.value: "Направление на медосмотр",
+    GeneratedDocumentKind.practice_characteristic.value: "Характеристика",
+}
 
 
 @router.callback_query(F.data.startswith("hr:medical:"))
 async def hr_send_medical_referral(
-    callback: CallbackQuery, session: AsyncSession, role: UserRole
+    callback: CallbackQuery, state: FSMContext, session: AsyncSession, role: UserRole
 ) -> None:
     if role not in (UserRole.hr, UserRole.admin):
         return
@@ -29,36 +43,80 @@ async def hr_send_medical_referral(
         return
 
     try:
-        file_path = await doc_service.render_medical_referral(app)
+        file_rel = await doc_service.render_medical_referral(app)
     except Exception as e:
         if callback.message:
             await callback.message.edit_text(f"Ошибка генерации документа: {e}")
         await callback.answer()
         return
 
-    gen_doc = GeneratedDocument(
-        application_id=app_id,
-        kind=GeneratedDocumentKind.medical_referral,
-        file_path=str(file_path),
+    session.add(
+        GeneratedDocument(
+            application_id=app_id,
+            kind=GeneratedDocumentKind.medical_referral,
+            file_path=str(file_rel),
+        )
     )
-    session.add(gen_doc)
     await session.flush()
 
     await session.refresh(app, ["user"])
+    abs_path = get_absolute_path(file_rel)
     await notifications.notify_user(
         bot=callback.bot,  # type: ignore[arg-type]
         tg_id=app.user.tg_id,
-        text=f"Направление на медосмотр по заявке #{app_id} сформировано. Прикреплён файл.",
-        document=FSInputFile(file_path),
+        text=texts.NOTIFY_MEDICAL_REFERRAL.format(app_id=app_id),
+        document=FSInputFile(abs_path),
     )
 
+    await state.set_state(HrMedicalDateStates.waiting_date)
+    await state.update_data(app_id=app_id)
     if callback.message:
-        await callback.message.answer_document(
-            FSInputFile(file_path),
-            caption=f"Направление на медосмотр для заявки #{app_id}",
-        )
-        await callback.message.edit_text("✅ Направление сформировано и отправлено кандидату.")
+        await callback.message.edit_text(texts.HR_MEDICAL_ASK_DATE)
     await callback.answer()
+
+
+@router.message(HrMedicalDateStates.waiting_date)
+async def hr_set_medical_date(
+    message: Message, state: FSMContext, session: AsyncSession
+) -> None:
+    try:
+        dt = datetime.strptime((message.text or "").strip(), "%d.%m.%Y %H:%M")
+    except ValueError:
+        await message.answer("Неверный формат. Введите ДД.ММ.ГГГГ ЧЧ:ММ.")
+        return
+
+    data = await state.get_data()
+    app_id: int = data["app_id"]
+
+    app = await get_application(session, app_id)
+    if not app:
+        await message.answer("Заявка не найдена.")
+        await state.clear()
+        return
+
+    await set_medical_date(session, app, dt)
+    session.add(
+        AuditLog(
+            application_id=app_id,
+            actor_tg_id=message.from_user.id if message.from_user else None,
+            event="medical_date_set",
+            details=dt.isoformat(),
+        )
+    )
+
+    await session.refresh(app, ["user"])
+    await notifications.notify_user(
+        bot=message.bot,  # type: ignore[arg-type]
+        tg_id=app.user.tg_id,
+        text=texts.NOTIFY_MEDICAL_DATE.format(
+            app_id=app_id, dt=dt.strftime("%d.%m.%Y %H:%M")
+        ),
+    )
+
+    await message.answer(
+        texts.HR_MEDICAL_DATE_SET.format(dt=dt.strftime("%d.%m.%Y %H:%M"))
+    )
+    await state.clear()
 
 
 @router.callback_query(F.data.startswith("hr:characteristic:"))
@@ -118,6 +176,10 @@ async def hr_characteristic_period_to(
     topic: str = data["topic"]
     period_from = datetime.fromisoformat(data["period_from"])
 
+    if dt_to < period_from:
+        await message.answer("Дата окончания должна быть не раньше даты начала.")
+        return
+
     app = await get_application(session, app_id)
     if not app:
         await message.answer("Заявка не найдена.")
@@ -125,7 +187,7 @@ async def hr_characteristic_period_to(
         return
 
     try:
-        file_path = await doc_service.render_practice_characteristic(
+        file_rel = await doc_service.render_practice_characteristic(
             app, supervisor=supervisor, topic=topic, period_from=period_from, period_to=dt_to
         )
     except Exception as e:
@@ -133,16 +195,17 @@ async def hr_characteristic_period_to(
         await state.clear()
         return
 
-    gen_doc = GeneratedDocument(
-        application_id=app_id,
-        kind=GeneratedDocumentKind.practice_characteristic,
-        file_path=str(file_path),
+    session.add(
+        GeneratedDocument(
+            application_id=app_id,
+            kind=GeneratedDocumentKind.practice_characteristic,
+            file_path=str(file_rel),
+        )
     )
-    session.add(gen_doc)
     await session.flush()
 
     await message.answer_document(
-        FSInputFile(file_path),
+        FSInputFile(get_absolute_path(file_rel)),
         caption=f"Характеристика по заявке #{app_id}",
     )
     await state.clear()
@@ -168,11 +231,11 @@ async def hr_show_generated_docs(
         await callback.answer()
         return
 
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
     builder = InlineKeyboardBuilder()
     for gd in gen_docs:
+        label = GEN_DOC_LABELS.get(gd.kind.value, gd.kind.value)
         builder.button(
-            text=f"📥 {gd.kind.value} ({gd.created_at.strftime('%d.%m.%Y')})",
+            text=f"📥 {label} ({gd.created_at.strftime('%d.%m.%Y')})",
             callback_data=f"hr:dl_gendoc:{gd.id}",
         )
     builder.button(text="◀️ Назад", callback_data=f"hr:app:{app_id}")
@@ -193,7 +256,6 @@ async def hr_download_generated_doc(
     if role not in (UserRole.hr, UserRole.admin):
         return
 
-    from sqlalchemy import select
     gd_id = int(callback.data.split(":")[2])  # type: ignore[union-attr]
     result = await session.execute(
         select(GeneratedDocument).where(GeneratedDocument.id == gd_id)
@@ -203,11 +265,19 @@ async def hr_download_generated_doc(
         await callback.answer("Документ не найден.")
         return
 
-    from pathlib import Path
-    file_path = Path(gd.file_path)
+    file_path = get_absolute_path(gd.file_path)
     if not file_path.exists():
         await callback.answer("Файл не найден на диске.")
         return
+
+    session.add(
+        AuditLog(
+            application_id=gd.application_id,
+            actor_tg_id=callback.from_user.id if callback.from_user else None,
+            event="gendoc_downloaded",
+            details=f"gendoc_id={gd.id}",
+        )
+    )
 
     if callback.message:
         await callback.message.answer_document(FSInputFile(file_path))

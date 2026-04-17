@@ -31,16 +31,19 @@ async def update_user(session: AsyncSession, user: User, **kwargs: object) -> Us
     return user
 
 
-async def get_all_hr(session: AsyncSession) -> list[User]:
+async def get_all_staff(session: AsyncSession) -> list[User]:
     result = await session.execute(
-        select(User).where(User.role == UserRole.hr, User.is_active.is_(True))
+        select(User).where(
+            User.role.in_((UserRole.hr, UserRole.admin)),
+            User.is_active.is_(True),
+        )
     )
     return list(result.scalars().all())
 
 
 async def set_user_role(session: AsyncSession, tg_id: int, role: UserRole) -> User | None:
     user = await get_user_by_tg_id(session, tg_id)
-    if user:
+    if user and user.role != role:
         user.role = role
         await session.flush()
     return user

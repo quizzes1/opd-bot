@@ -11,7 +11,6 @@ dependencies = [
     "asyncpg>=0.29",
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
-    "python-docx>=1.1",
     "docxtpl>=0.16",
     "loguru>=0.7",
 ]
@@ -20,7 +19,23 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+    "mypy>=1.10",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict_optional = true
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
 
 [build-system]
 requires = ["hatchling"]

@@ -2,11 +2,21 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeybo
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 
-def candidate_main_menu() -> ReplyKeyboardMarkup:
+def candidate_main_menu(has_active_application: bool = False) -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
-    builder.row(KeyboardButton(text="📋 Мои заявки"), KeyboardButton(text="📄 Подать заявку"))
-    builder.row(KeyboardButton(text="📅 Записаться на собеседование"), KeyboardButton(text="🎓 Записаться на обучение"))
-    builder.row(KeyboardButton(text="🔄 Изменить документы"), KeyboardButton(text="💬 Связаться с HR"))
+    builder.row(KeyboardButton(text="📋 Мои заявки"))
+    if has_active_application:
+        builder.row(
+            KeyboardButton(text="📅 Записаться на собеседование"),
+            KeyboardButton(text="🎓 Записаться на обучение"),
+        )
+        builder.row(
+            KeyboardButton(text="🔄 Изменить документы"),
+            KeyboardButton(text="💬 Связаться с HR"),
+        )
+    else:
+        builder.row(KeyboardButton(text="📄 Подать заявку"))
+        builder.row(KeyboardButton(text="💬 Связаться с HR"))
     return builder.as_markup(resize_keyboard=True)
 
 

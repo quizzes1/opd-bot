@@ -3,7 +3,9 @@ import asyncio
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.fsm.storage.base import BaseStorage
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiohttp import web
 from loguru import logger
 
 from opdbot.bot.handlers.candidate import (
@@ -14,6 +16,7 @@ from opdbot.bot.handlers.candidate import (
     status,
 )
 from opdbot.bot.handlers.common import router as common_router
+from opdbot.bot.handlers.fallback import router as fallback_router
 from opdbot.bot.handlers.hr import (
     applications,
     catalog,
@@ -25,33 +28,23 @@ from opdbot.bot.handlers.hr import (
 from opdbot.bot.middlewares.auth import RoleMiddleware
 from opdbot.bot.middlewares.db import DbSessionMiddleware
 from opdbot.config import settings
-from opdbot.db.base import engine
-from opdbot.db.models import Base
 from opdbot.logging import setup_logging
 
 
-async def create_tables() -> None:
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+def build_storage() -> BaseStorage:
+    if settings.redis_url:
+        try:
+            from aiogram.fsm.storage.redis import RedisStorage
+
+            storage: BaseStorage = RedisStorage.from_url(settings.redis_url)
+            logger.info("Using RedisStorage for FSM")
+            return storage
+        except ImportError:
+            logger.warning("redis is not installed, falling back to MemoryStorage")
+    return MemoryStorage()
 
 
-async def main() -> None:
-    setup_logging()
-    logger.info("Starting opdbot...")
-
-    bot = Bot(
-        token=settings.bot_token,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
-
-    storage = MemoryStorage()
-    dp = Dispatcher(storage=storage)
-
-    # Middlewares (order matters: db first, then auth)
-    dp.update.outer_middleware(DbSessionMiddleware())
-    dp.update.outer_middleware(RoleMiddleware())
-
-    # Routers
+def register_routers(dp: Dispatcher) -> None:
     dp.include_router(common_router)
     dp.include_router(onboarding.router)
     dp.include_router(docs.router)
@@ -64,21 +57,51 @@ async def main() -> None:
     dp.include_router(slots.router)
     dp.include_router(catalog.router)
     dp.include_router(documents_gen.router)
+    dp.include_router(fallback_router)
 
-    await create_tables()
-    logger.info("Database tables ensured.")
+
+async def run_webhook(bot: Bot, dp: Dispatcher) -> None:
+    from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+
+    webhook_path = "/webhook"
+    await bot.set_webhook(settings.webhook_url.rstrip("/") + webhook_path)
+
+    app = web.Application()
+    handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
+    handler.register(app, path=webhook_path)
+    setup_application(app, dp, bot=bot)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host=settings.webhook_host, port=settings.webhook_port)
+    await site.start()
+    logger.info("Webhook site started on {}:{}", settings.webhook_host, settings.webhook_port)
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await runner.cleanup()
+
+
+async def main() -> None:
+    setup_logging()
+    if not settings.bot_token:
+        raise SystemExit("BOT_TOKEN is required. Set it in .env")
+
+    logger.info("Starting opdbot...")
+
+    bot = Bot(
+        token=settings.bot_token,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
+    dp = Dispatcher(storage=build_storage())
+
+    dp.update.outer_middleware(DbSessionMiddleware())
+    dp.update.outer_middleware(RoleMiddleware())
+
+    register_routers(dp)
 
     if settings.webhook_url:
-        from aiohttp import web
-        from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-
-        webhook_path = "/webhook"
-        await bot.set_webhook(settings.webhook_url + webhook_path)
-        app = web.Application()
-        handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
-        handler.register(app, path=webhook_path)
-        setup_application(app, dp, bot=bot)
-        web.run_app(app, host="0.0.0.0", port=8080)
+        await run_webhook(bot, dp)
     else:
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot)

@@ -32,3 +32,11 @@ class HrCatalogStates(StatesGroup):
     waiting_doc_code = State()
     waiting_doc_mime = State()
     waiting_doc_size = State()
+
+
+class HrRequestDocStates(StatesGroup):
+    choosing_req = State()
+
+
+class HrMedicalDateStates(StatesGroup):
+    waiting_date = State()
