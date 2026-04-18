@@ -1,5 +1,18 @@
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+)
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
+
+from opdbot.bot import texts
+
+
+def cancel_reply_keyboard() -> ReplyKeyboardMarkup:
+    builder = ReplyKeyboardBuilder()
+    builder.row(KeyboardButton(text=texts.BTN_CANCEL_REPLY))
+    return builder.as_markup(resize_keyboard=True, one_time_keyboard=False)
 
 
 def candidate_main_menu(has_active_application: bool = False) -> ReplyKeyboardMarkup:

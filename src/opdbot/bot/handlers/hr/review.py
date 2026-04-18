@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from opdbot.bot import texts
 from opdbot.bot.keyboards.hr import document_actions_keyboard, request_doc_keyboard
+from opdbot.bot.keyboards.main_menu import cancel_reply_keyboard, hr_main_menu
 from opdbot.bot.states.hr import HrMessageStates, HrRejectDocStates, HrRequestDocStates
 from opdbot.db.models import (
     ApplicationStatus,
@@ -34,7 +35,7 @@ async def hr_show_documents(
     callback: CallbackQuery, session: AsyncSession, role: UserRole
 ) -> None:
     if role not in (UserRole.hr, UserRole.admin):
-        await callback.answer("Нет доступа.")
+        await callback.answer(texts.HR_NO_ACCESS)
         return
 
     app_id = int(callback.data.split(":")[2])  # type: ignore[union-attr]
@@ -42,7 +43,7 @@ async def hr_show_documents(
 
     if not docs:
         if callback.message:
-            await callback.message.edit_text("Документов нет.")
+            await callback.message.edit_text(texts.HR_REVIEW_NO_DOCS)
         await callback.answer()
         return
 
@@ -60,7 +61,7 @@ async def hr_show_documents(
 
     if callback.message:
         await callback.message.edit_text(
-            f"Документы по заявке #{app_id}:",
+            texts.HR_REVIEW_DOCS_HEADER.format(app_id=app_id),
             reply_markup=builder.as_markup(),
         )
     await callback.answer()
@@ -77,19 +78,19 @@ async def hr_document_card(
     result = await session.execute(select(Document).where(Document.id == doc_id))
     doc = result.scalar_one_or_none()
     if not doc:
-        await callback.answer("Документ не найден.")
+        await callback.answer(texts.HR_DOC_NOT_FOUND)
         return
 
     await session.refresh(doc, ["requirement"])
     req_title = doc.requirement.title if doc.requirement else "—"
-    text = (
-        f"Документ: <b>{req_title}</b>\n"
-        f"Файл: {doc.original_name or '—'}\n"
-        f"Размер: {round((doc.size_bytes or 0) / 1024, 1)} КБ\n"
-        f"Статус: {doc.status.value}\n"
+    text = texts.HR_REVIEW_DOC_CARD.format(
+        req_title=req_title,
+        file_name=doc.original_name or "—",
+        size_kb=round((doc.size_bytes or 0) / 1024, 1),
+        status=doc.status.value,
     )
     if doc.reject_reason:
-        text += f"Причина отклонения: {doc.reject_reason}\n"
+        text += texts.HR_REVIEW_REJECT_REASON_LINE.format(reason=doc.reject_reason)
 
     if callback.message:
         await callback.message.edit_text(
@@ -111,12 +112,12 @@ async def hr_download_document(
     result = await session.execute(select(Document).where(Document.id == doc_id))
     doc = result.scalar_one_or_none()
     if not doc:
-        await callback.answer("Документ не найден.")
+        await callback.answer(texts.HR_DOC_NOT_FOUND)
         return
 
     file_path = get_absolute_path(doc.file_path)
     if not file_path.exists():
-        await callback.answer("Файл не найден на диске.")
+        await callback.answer(texts.HR_FILE_MISSING)
         return
 
     session.add(
@@ -144,7 +145,7 @@ async def hr_approve_document(
     result = await session.execute(select(Document).where(Document.id == doc_id))
     doc = result.scalar_one_or_none()
     if not doc:
-        await callback.answer("Документ не найден.")
+        await callback.answer(texts.HR_DOC_NOT_FOUND)
         return
 
     await session.refresh(doc, ["requirement"])
@@ -178,7 +179,10 @@ async def hr_reject_doc_start(
     await state.set_state(HrRejectDocStates.waiting_reason)
     await state.update_data(doc_id=doc_id)
     if callback.message:
-        await callback.message.edit_text(texts.HR_ASK_REJECT_REASON)
+        await callback.message.delete()
+        await callback.message.answer(
+            texts.HR_ASK_REJECT_REASON, reply_markup=cancel_reply_keyboard()
+        )
     await callback.answer()
 
 
@@ -193,7 +197,7 @@ async def hr_reject_doc_reason(
     result = await session.execute(select(Document).where(Document.id == doc_id))
     doc = result.scalar_one_or_none()
     if not doc:
-        await message.answer("Документ не найден.")
+        await message.answer(texts.HR_DOC_NOT_FOUND)
         await state.clear()
         return
 
@@ -223,7 +227,9 @@ async def hr_reject_doc_reason(
         )
 
     req_title = doc.requirement.title if doc.requirement else "—"
-    await message.answer(texts.HR_DOC_REJECTED.format(title=req_title))
+    await message.answer(
+        texts.HR_DOC_REJECTED.format(title=req_title), reply_markup=hr_main_menu()
+    )
     await state.clear()
 
 
@@ -237,7 +243,7 @@ async def hr_approve_application(
     app_id = int(callback.data.split(":")[2])  # type: ignore[union-attr]
     app = await get_application(session, app_id)
     if not app:
-        await callback.answer("Заявка не найдена.")
+        await callback.answer(texts.HR_APP_NOT_FOUND)
         return
 
     await update_application_status(session, app, ApplicationStatus.approved)
@@ -260,7 +266,7 @@ async def hr_approve_application(
     )
 
     if callback.message:
-        await callback.message.edit_text(f"✅ Заявка #{app_id} одобрена.")
+        await callback.message.edit_text(texts.HR_REVIEW_APP_APPROVED.format(app_id=app_id))
     await callback.answer()
 
 
@@ -274,7 +280,7 @@ async def hr_reject_application(
     app_id = int(callback.data.split(":")[2])  # type: ignore[union-attr]
     app = await get_application(session, app_id)
     if not app:
-        await callback.answer("Заявка не найдена.")
+        await callback.answer(texts.HR_APP_NOT_FOUND)
         return
 
     await update_application_status(session, app, ApplicationStatus.rejected)
@@ -297,7 +303,44 @@ async def hr_reject_application(
     )
 
     if callback.message:
-        await callback.message.edit_text(f"❌ Заявка #{app_id} отклонена.")
+        await callback.message.edit_text(texts.HR_REVIEW_APP_REJECTED.format(app_id=app_id))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("hr:cancel_app:"))
+async def hr_cancel_application(
+    callback: CallbackQuery, session: AsyncSession, role: UserRole
+) -> None:
+    if role not in (UserRole.hr, UserRole.admin):
+        return
+
+    app_id = int(callback.data.split(":")[2])  # type: ignore[union-attr]
+    app = await get_application(session, app_id)
+    if not app:
+        await callback.answer(texts.HR_APP_NOT_FOUND)
+        return
+
+    await update_application_status(session, app, ApplicationStatus.cancelled)
+    session.add(
+        AuditLog(
+            application_id=app_id,
+            actor_tg_id=callback.from_user.id if callback.from_user else None,
+            event="application_cancelled_by_hr",
+        )
+    )
+
+    await session.refresh(app, ["user"])
+    await notifications.notify_user(
+        bot=callback.bot,  # type: ignore[arg-type]
+        tg_id=app.user.tg_id,
+        text=texts.NOTIFY_STATUS_CHANGED.format(
+            app_id=app_id,
+            status=texts.STATUS_LABELS["cancelled"],
+        ),
+    )
+
+    if callback.message:
+        await callback.message.edit_text(texts.HR_APP_CANCELLED.format(app_id=app_id))
     await callback.answer()
 
 
@@ -311,7 +354,7 @@ async def hr_request_document(
     app_id = int(callback.data.split(":")[2])  # type: ignore[union-attr]
     app = await get_application(session, app_id)
     if not app:
-        await callback.answer("Заявка не найдена.")
+        await callback.answer(texts.HR_APP_NOT_FOUND)
         return
 
     requirements = await get_requirements_for_goal(session, app.goal_id)
@@ -319,7 +362,7 @@ async def hr_request_document(
     await state.update_data(app_id=app_id)
     if callback.message:
         await callback.message.edit_text(
-            "Выберите документ для запроса:",
+            texts.HR_REVIEW_CHOOSE_DOC_REQ,
             reply_markup=request_doc_keyboard(requirements),
         )
     await callback.answer()
@@ -336,7 +379,7 @@ async def hr_send_doc_request(
     data = await state.get_data()
     app_id: int | None = data.get("app_id")
     if app_id is None:
-        await callback.answer("Сессия устарела, повторите действие.")
+        await callback.answer(texts.HR_SESSION_EXPIRED)
         await state.clear()
         return
 
@@ -345,12 +388,12 @@ async def hr_send_doc_request(
     )
     req = result.scalar_one_or_none()
     if not req:
-        await callback.answer("Требование не найдено.")
+        await callback.answer(texts.HR_REQ_NOT_FOUND)
         return
 
     app = await get_application(session, app_id)
     if not app:
-        await callback.answer("Заявка не найдена.")
+        await callback.answer(texts.HR_APP_NOT_FOUND)
         await state.clear()
         return
 
@@ -370,7 +413,7 @@ async def hr_send_doc_request(
 
     if callback.message:
         await callback.message.edit_text(
-            f"✅ Запрос документа «{req.title}» отправлен кандидату по заявке #{app.id}."
+            texts.HR_REVIEW_DOC_REQUEST_SENT.format(title=req.title, app_id=app.id)
         )
     await state.clear()
     await callback.answer()
@@ -387,7 +430,10 @@ async def hr_message_start(
     await state.set_state(HrMessageStates.waiting_text)
     await state.update_data(app_id=app_id)
     if callback.message:
-        await callback.message.edit_text("Введите сообщение кандидату:")
+        await callback.message.delete()
+        await callback.message.answer(
+            texts.HR_REVIEW_ASK_MESSAGE, reply_markup=cancel_reply_keyboard()
+        )
     await callback.answer()
 
 
@@ -401,7 +447,7 @@ async def hr_message_send(
 
     app = await get_application(session, app_id)
     if not app:
-        await message.answer("Заявка не найдена.")
+        await message.answer(texts.HR_APP_NOT_FOUND)
         await state.clear()
         return
 
@@ -420,5 +466,5 @@ async def hr_message_send(
         text=texts.NOTIFY_HR_MESSAGE.format(app_id=app_id, text=text),
     )
 
-    await message.answer("✅ Сообщение отправлено кандидату.")
+    await message.answer(texts.HR_REVIEW_MESSAGE_SENT, reply_markup=hr_main_menu())
     await state.clear()

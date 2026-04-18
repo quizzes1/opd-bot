@@ -5,6 +5,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from opdbot.bot import texts
+from opdbot.bot.keyboards.main_menu import cancel_reply_keyboard, hr_main_menu
 from opdbot.bot.states.hr import HrCatalogStates
 from opdbot.db.models import DocumentRequirement, Goal, UserRole
 from opdbot.db.repo.documents import get_requirements_for_goal
@@ -24,7 +26,7 @@ async def hr_catalog_menu(message: Message, session: AsyncSession, role: UserRol
     for goal in goals:
         builder.button(text=goal.title, callback_data=f"hr:catalog:goal:{goal.id}")
     builder.adjust(1)
-    await message.answer("Выберите цель для просмотра документов:", reply_markup=builder.as_markup())
+    await message.answer(texts.HR_CATALOG_CHOOSE_GOAL, reply_markup=builder.as_markup())
 
 
 @router.callback_query(F.data.startswith("hr:catalog:goal:"))
@@ -39,7 +41,8 @@ async def hr_catalog_goal_docs(
 
     builder = InlineKeyboardBuilder()
     for req in requirements:
-        req_label = f"{req.title} ({'обяз.' if req.is_required else 'необяз.'})"
+        mark = texts.HR_CATALOG_REQUIRED_MARK if req.is_required else texts.HR_CATALOG_OPTIONAL_MARK
+        req_label = texts.HR_CATALOG_REQ_LABEL.format(title=req.title, mark=mark)
         builder.button(text=req_label, callback_data=f"hr:catalog:req:{req.id}")
     builder.button(text="➕ Добавить документ", callback_data=f"hr:catalog:add:{goal_id}")
     builder.button(text="◀️ Назад", callback_data="hr:catalog:back")
@@ -47,7 +50,7 @@ async def hr_catalog_goal_docs(
 
     if callback.message:
         await callback.message.edit_text(
-            f"Документы для цели (всего {len(requirements)}):",
+            texts.HR_CATALOG_GOAL_HEADER.format(count=len(requirements)),
             reply_markup=builder.as_markup(),
         )
     await callback.answer()
@@ -64,7 +67,10 @@ async def hr_catalog_add_start(
     await state.set_state(HrCatalogStates.waiting_doc_title)
     await state.update_data(goal_id=goal_id)
     if callback.message:
-        await callback.message.edit_text("Введите название документа:")
+        await callback.message.delete()
+        await callback.message.answer(
+            texts.HR_CATALOG_ASK_TITLE, reply_markup=cancel_reply_keyboard()
+        )
     await callback.answer()
 
 
@@ -72,25 +78,25 @@ async def hr_catalog_add_start(
 async def hr_catalog_doc_title(message: Message, state: FSMContext) -> None:
     await state.update_data(doc_title=message.text or "")
     await state.set_state(HrCatalogStates.waiting_doc_code)
-    await message.answer("Введите код документа (латиница, без пробелов, напр. passport):")
+    await message.answer(texts.HR_CATALOG_ASK_CODE)
 
 
 @router.message(HrCatalogStates.waiting_doc_code)
 async def hr_catalog_doc_code(message: Message, state: FSMContext) -> None:
     code = (message.text or "").strip().lower()
     if not code.replace("_", "").isalpha():
-        await message.answer("Код должен содержать только латинские буквы и подчёркивание:")
+        await message.answer(texts.HR_CATALOG_BAD_CODE)
         return
     await state.update_data(doc_code=code)
     await state.set_state(HrCatalogStates.waiting_doc_mime)
-    await message.answer("Допустимые форматы (через запятую, напр. pdf,jpg,jpeg):")
+    await message.answer(texts.HR_CATALOG_ASK_MIME)
 
 
 @router.message(HrCatalogStates.waiting_doc_mime)
 async def hr_catalog_doc_mime(message: Message, state: FSMContext) -> None:
     await state.update_data(doc_mime=message.text or "pdf,jpg,jpeg")
     await state.set_state(HrCatalogStates.waiting_doc_size)
-    await message.answer("Максимальный размер в МБ (напр. 10):")
+    await message.answer(texts.HR_CATALOG_ASK_SIZE)
 
 
 @router.message(HrCatalogStates.waiting_doc_size)
@@ -100,7 +106,7 @@ async def hr_catalog_doc_size(message: Message, state: FSMContext, session: Asyn
         if max_size <= 0:
             raise ValueError
     except ValueError:
-        await message.answer("Введите положительное число:")
+        await message.answer(texts.HR_CATALOG_BAD_SIZE)
         return
 
     data = await state.get_data()
@@ -123,7 +129,9 @@ async def hr_catalog_doc_size(message: Message, state: FSMContext, session: Asyn
     session.add(req)
     await session.flush()
 
-    await message.answer(f"✅ Документ «{title}» добавлен в каталог.")
+    await message.answer(
+        texts.HR_CATALOG_ADDED.format(title=title), reply_markup=hr_main_menu()
+    )
     await state.clear()
 
 
@@ -138,15 +146,15 @@ async def hr_catalog_req_detail(
     result = await session.execute(select(DocumentRequirement).where(DocumentRequirement.id == req_id))
     req = result.scalar_one_or_none()
     if not req:
-        await callback.answer("Требование не найдено.")
+        await callback.answer(texts.HR_REQ_NOT_FOUND)
         return
 
-    text = (
-        f"<b>{req.title}</b>\n"
-        f"Код: {req.code}\n"
-        f"Форматы: {req.allowed_mime}\n"
-        f"Макс. размер: {req.max_size_mb} МБ\n"
-        f"Обязателен: {'да' if req.is_required else 'нет'}\n"
+    text = texts.HR_CATALOG_REQ_CARD.format(
+        title=req.title,
+        code=req.code,
+        allowed_mime=req.allowed_mime,
+        max_size=req.max_size_mb,
+        required=texts.HR_CATALOG_YES if req.is_required else texts.HR_CATALOG_NO,
     )
 
     builder = InlineKeyboardBuilder()
@@ -180,7 +188,7 @@ async def hr_catalog_delete_req(
         await session.flush()
 
     if callback.message:
-        await callback.message.edit_text(f"Требование удалено.")
+        await callback.message.edit_text(texts.HR_CATALOG_DELETED)
     await callback.answer()
 
 
@@ -196,7 +204,7 @@ async def hr_catalog_back(callback: CallbackQuery, session: AsyncSession) -> Non
 
     if callback.message:
         await callback.message.edit_text(
-            "Выберите цель для просмотра документов:",
+            texts.HR_CATALOG_CHOOSE_GOAL,
             reply_markup=builder.as_markup(),
         )
     await callback.answer()

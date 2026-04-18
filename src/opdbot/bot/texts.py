@@ -235,6 +235,7 @@ HR_REVIEW_DOC_CARD = (
 HR_REVIEW_REJECT_REASON_LINE = "Причина отклонения: {reason}\n"
 HR_REVIEW_APP_APPROVED = "✅ Заявка #{app_id} одобрена."
 HR_REVIEW_APP_REJECTED = "❌ Заявка #{app_id} отклонена."
+HR_APP_CANCELLED = "🗑 Заявка #{app_id} отменена администратором."
 HR_REVIEW_CHOOSE_DOC_REQ = "Выберите документ для запроса:"
 HR_REVIEW_DOC_REQUEST_SENT = "✅ Запрос документа «{title}» отправлен кандидату по заявке #{app_id}."
 HR_REVIEW_ASK_MESSAGE = "Введите сообщение кандидату:"

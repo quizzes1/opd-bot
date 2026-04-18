@@ -1,7 +1,12 @@
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from opdbot.db.models import Application, Document, DocumentRequirement
+from opdbot.db.models import (
+    ACTIVE_STATUSES,
+    Application,
+    Document,
+    DocumentRequirement,
+)
 
 
 def application_card_keyboard(app: Application) -> InlineKeyboardMarkup:
@@ -15,6 +20,8 @@ def application_card_keyboard(app: Application) -> InlineKeyboardMarkup:
     builder.button(text="📋 Запросить документ", callback_data=f"hr:request_doc:{app.id}")
     builder.button(text="💬 Написать кандидату", callback_data=f"hr:message:{app.id}")
     builder.button(text="📄 Сформировать характеристику", callback_data=f"hr:characteristic:{app.id}")
+    if app.status in ACTIVE_STATUSES:
+        builder.button(text="🗑 Отменить заявку", callback_data=f"hr:cancel_app:{app.id}")
     builder.button(text="◀️ Назад", callback_data="hr:applications")
     builder.adjust(2)
     return builder.as_markup()

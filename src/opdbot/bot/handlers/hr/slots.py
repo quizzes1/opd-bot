@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from opdbot.bot import texts
 from opdbot.bot.keyboards.hr import slot_kind_keyboard
+from opdbot.bot.keyboards.main_menu import cancel_reply_keyboard, hr_main_menu
 from opdbot.bot.states.hr import HrSlotStates
 from opdbot.db.models import SlotKind, UserRole
 from opdbot.db.repo.slots import create_slot, deactivate_slot, list_slots
@@ -32,7 +33,15 @@ async def hr_slots_menu(message: Message, role: UserRole, session: AsyncSession)
         kind_label = texts.SLOT_KIND_LABELS.get(slot.kind.value, slot.kind.value)
         dt = slot.starts_at.strftime("%d.%m.%Y %H:%M")
         free = slot.capacity - slot.booked_count
-        lines.append(f"{kind_label}: {dt} (мест: {free}/{slot.capacity}) [#{slot.id}]")
+        lines.append(
+            texts.HR_SLOT_LINE.format(
+                kind_label=kind_label,
+                dt=dt,
+                free=free,
+                capacity=slot.capacity,
+                slot_id=slot.id,
+            )
+        )
 
     builder = InlineKeyboardBuilder()
     builder.button(text="➕ Создать слот", callback_data="hr:slot:create")
@@ -40,7 +49,8 @@ async def hr_slots_menu(message: Message, role: UserRole, session: AsyncSession)
         builder.button(text=f"❌ Удалить #{slot.id}", callback_data=f"hr:slot:del:{slot.id}")
     builder.adjust(1)
 
-    text = "Активные слоты:\n" + ("\n".join(lines) if lines else "Нет активных слотов.")
+    body = "\n".join(lines) if lines else texts.HR_SLOTS_EMPTY
+    text = f"{texts.HR_SLOTS_HEADER}\n{body}"
     await message.answer(text, reply_markup=builder.as_markup())
 
 
@@ -52,7 +62,7 @@ async def hr_slot_create_start(
         return
     await state.set_state(HrSlotStates.waiting_kind)
     if callback.message:
-        await callback.message.edit_text("Выберите тип слота:", reply_markup=slot_kind_keyboard())
+        await callback.message.edit_text(texts.HR_SLOT_CHOOSE_KIND, reply_markup=slot_kind_keyboard())
     await callback.answer()
 
 
@@ -62,7 +72,8 @@ async def hr_slot_kind_selected(callback: CallbackQuery, state: FSMContext) -> N
     await state.update_data(slot_kind=kind_str)
     await state.set_state(HrSlotStates.waiting_date)
     if callback.message:
-        await callback.message.edit_text(texts.HR_ASK_SLOT_DATE)
+        await callback.message.delete()
+        await callback.message.answer(texts.HR_ASK_SLOT_DATE, reply_markup=cancel_reply_keyboard())
     await callback.answer()
 
 
@@ -72,7 +83,7 @@ async def hr_slot_date(message: Message, state: FSMContext) -> None:
     try:
         dt = datetime.strptime(text, "%d.%m.%Y %H:%M")
     except ValueError:
-        await message.answer("Неверный формат. Введите дату и время в формате ДД.ММ.ГГГГ ЧЧ:ММ:")
+        await message.answer(texts.HR_SLOT_BAD_DATE)
         return
     await state.update_data(slot_starts_at=dt.isoformat())
     await state.set_state(HrSlotStates.waiting_duration)
@@ -86,7 +97,7 @@ async def hr_slot_duration(message: Message, state: FSMContext) -> None:
         if minutes <= 0:
             raise ValueError
     except ValueError:
-        await message.answer("Введите положительное число минут:")
+        await message.answer(texts.HR_SLOT_BAD_MINUTES)
         return
     await state.update_data(slot_duration_minutes=minutes)
     await state.set_state(HrSlotStates.waiting_capacity)
@@ -100,7 +111,7 @@ async def hr_slot_capacity(message: Message, state: FSMContext, session: AsyncSe
         if capacity <= 0:
             raise ValueError
     except ValueError:
-        await message.answer("Введите положительное число:")
+        await message.answer(texts.HR_SLOT_BAD_CAPACITY)
         return
 
     data = await state.get_data()
@@ -113,7 +124,10 @@ async def hr_slot_capacity(message: Message, state: FSMContext, session: AsyncSe
     slot = await create_slot(session, kind=kind, starts_at=starts_at, ends_at=ends_at, capacity=capacity)
     kind_label = texts.SLOT_KIND_LABELS.get(kind_str, kind_str)
     dt_str = starts_at.strftime("%d.%m.%Y %H:%M")
-    await message.answer(texts.HR_SLOT_CREATED.format(kind=kind_label, dt=dt_str))
+    await message.answer(
+        texts.HR_SLOT_CREATED.format(kind=kind_label, dt=dt_str),
+        reply_markup=hr_main_menu(),
+    )
     await state.clear()
 
 
@@ -127,5 +141,5 @@ async def hr_slot_deactivate(
     slot_id = int(callback.data.split(":")[3])  # type: ignore[union-attr]
     await deactivate_slot(session, slot_id)
     if callback.message:
-        await callback.message.edit_text(f"Слот #{slot_id} деактивирован.")
+        await callback.message.edit_text(texts.HR_SLOT_DEACTIVATED.format(slot_id=slot_id))
     await callback.answer()

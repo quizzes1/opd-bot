@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from opdbot.bot import texts
 from opdbot.bot.keyboards.goals import goals_keyboard
-from opdbot.bot.keyboards.main_menu import candidate_main_menu
+from opdbot.bot.keyboards.main_menu import candidate_main_menu, cancel_reply_keyboard
 from opdbot.bot.states.candidate import OnboardingStates
 from opdbot.db.models import Goal
 from opdbot.db.repo.applications import create_application, get_active_application
@@ -32,7 +32,7 @@ async def handle_full_name(message: Message, state: FSMContext, session: AsyncSe
 
     await state.update_data(full_name=text)
     await state.set_state(OnboardingStates.waiting_phone)
-    await message.answer(texts.ASK_PHONE)
+    await message.answer(texts.ASK_PHONE, reply_markup=cancel_reply_keyboard())
 
 
 @router.message(OnboardingStates.waiting_phone)

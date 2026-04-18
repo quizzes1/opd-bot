@@ -4,7 +4,7 @@ from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from opdbot.bot import texts
-from opdbot.bot.keyboards.main_menu import candidate_main_menu
+from opdbot.bot.keyboards.main_menu import candidate_main_menu, cancel_reply_keyboard
 from opdbot.bot.states.candidate import FeedbackStates
 from opdbot.db.models import ChatMessage, MessageFromRole
 from opdbot.db.repo.applications import get_active_application
@@ -32,7 +32,7 @@ async def start_feedback(message: Message, state: FSMContext, session: AsyncSess
 
     await state.set_state(FeedbackStates.waiting_message)
     await state.update_data(application_id=active.id)
-    await message.answer(texts.FEEDBACK_ASK)
+    await message.answer(texts.FEEDBACK_ASK, reply_markup=cancel_reply_keyboard())
 
 
 @router.message(FeedbackStates.waiting_message)

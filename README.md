@@ -84,6 +84,28 @@ uv run pytest
 
 ---
 
+## Первоначальная настройка HR
+
+После первого запуска бота (свежая база) роли `hr` нет ни у кого, кроме суперадминов из `SUPERADMIN_TG_IDS`. Чтобы выдать роль HR коллеге:
+
+1. Коллега открывает бота и отправляет `/start` — это создаёт запись о пользователе в БД.
+2. Узнайте его Telegram ID (через `@userinfobot` или из логов бота).
+3. Суперадмин отправляет в бота:
+
+   ```
+   /grant_hr <telegram_id>
+   ```
+
+После этого пользователь видит HR-меню. Команда `/grant_hr` доступна только суперадминам — обычные HR её не видят.
+
+Полный список зарегистрированных пользователей и их ролей доступен напрямую через БД:
+
+```bash
+sqlite3 opdbot.db "SELECT id, tg_id, full_name, role FROM users;"
+```
+
+---
+
 ## Структура проекта
 
 ```
@@ -178,13 +200,27 @@ docker-compose up -d
 docker-compose exec bot uv run alembic upgrade head
 ```
 
-### Бэкап файлов
+### Бэкап файлов и БД
 
-Директория `storage/` содержит все загруженные документы. Рекомендуется ежедневный бэкап через `robocopy` (Windows) или `rsync` (Linux):
+Директория `storage/` (загруженные документы) и БД (`opdbot.db` или dump из Postgres) должны бэкапиться регулярно.
 
-```bat
-robocopy .\storage\ D:\backup\opdbot-storage\ /MIR /LOG:backup.log
+Скрипт `scripts/backup.sh` (Linux/macOS) делает дневной бэкап файлов и Postgres-дампа в `./backups/<дата>/`. На Windows — аналогичный `scripts/backup.bat`. Запускать через cron / Планировщик задач.
+
+Быстрый ручной бэкап:
+
+```bash
+# Postgres
+docker-compose exec -T postgres pg_dump -U opdbot opdbot > backups/db-$(date +%Y%m%d).sql
+
+# Файлы кандидатов
+tar -czf backups/storage-$(date +%Y%m%d).tar.gz storage/
 ```
+
+---
+
+## Healthcheck
+
+Контейнер бота имеет встроенный healthcheck (см. `docker-compose.yml`), который проверяет, что процесс жив. При работе через webhook (`WEBHOOK_URL` задан) дополнительный HTTP-эндпоинт `/health` отвечает `200 OK`.
 
 ---
 

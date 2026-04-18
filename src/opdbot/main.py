@@ -60,6 +60,10 @@ def register_routers(dp: Dispatcher) -> None:
     dp.include_router(fallback_router)
 
 
+async def _health(_: web.Request) -> web.Response:
+    return web.json_response({"status": "ok"})
+
+
 async def run_webhook(bot: Bot, dp: Dispatcher) -> None:
     from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
@@ -67,6 +71,7 @@ async def run_webhook(bot: Bot, dp: Dispatcher) -> None:
     await bot.set_webhook(settings.webhook_url.rstrip("/") + webhook_path)
 
     app = web.Application()
+    app.router.add_get("/health", _health)
     handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
     handler.register(app, path=webhook_path)
     setup_application(app, dp, bot=bot)

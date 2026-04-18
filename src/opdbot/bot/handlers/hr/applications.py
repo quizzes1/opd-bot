@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from opdbot.bot import texts
 from opdbot.bot.keyboards.hr import application_card_keyboard, applications_filter_keyboard
+from opdbot.bot.keyboards.main_menu import cancel_reply_keyboard, hr_main_menu
 from opdbot.bot.states.hr import HrSearchStates
 from opdbot.db.models import ACTIVE_STATUSES, ApplicationStatus, UserRole
 from opdbot.db.repo.applications import (
@@ -55,7 +56,7 @@ async def hr_filter_applications(
     callback: CallbackQuery, session: AsyncSession, role: UserRole
 ) -> None:
     if role not in (UserRole.hr, UserRole.admin):
-        await callback.answer("Нет доступа.")
+        await callback.answer(texts.HR_NO_ACCESS)
         return
 
     parts = callback.data.split(":")  # type: ignore[union-attr]
@@ -103,13 +104,13 @@ async def hr_application_card(
     callback: CallbackQuery, session: AsyncSession, role: UserRole
 ) -> None:
     if role not in (UserRole.hr, UserRole.admin):
-        await callback.answer("Нет доступа.")
+        await callback.answer(texts.HR_NO_ACCESS)
         return
 
     app_id = int(callback.data.split(":")[2])  # type: ignore[union-attr]
     app = await get_application(session, app_id)
     if not app:
-        await callback.answer("Заявка не найдена.")
+        await callback.answer(texts.HR_APP_NOT_FOUND)
         return
 
     user = app.user
@@ -125,7 +126,7 @@ async def hr_application_card(
     text = texts.HR_APPLICATION_CARD.format(
         app_id=app.id,
         full_name=user.full_name or "—",
-        username=user.tg_username or "нет",
+        username=user.tg_username or texts.USERNAME_NONE,
         phone=user.phone or "—",
         goal=goal_label,
         status=status_label,
@@ -148,7 +149,7 @@ async def hr_application_card(
 async def hr_back_to_applications(callback: CallbackQuery) -> None:
     if callback.message:
         await callback.message.edit_text(
-            "Фильтр заявок:",
+            texts.HR_FILTER_PROMPT,
             reply_markup=applications_filter_keyboard(),
         )
     await callback.answer()
@@ -159,7 +160,7 @@ async def hr_search_start(message: Message, state: FSMContext, role: UserRole) -
     if role not in (UserRole.hr, UserRole.admin):
         return
     await state.set_state(HrSearchStates.waiting_query)
-    await message.answer("Введите ФИО, @username или телефон кандидата:")
+    await message.answer(texts.HR_SEARCH_PROMPT, reply_markup=cancel_reply_keyboard())
 
 
 @router.message(HrSearchStates.waiting_query)
@@ -168,13 +169,13 @@ async def hr_search_execute(
 ) -> None:
     query_text = (message.text or "").strip()
     if not query_text:
-        await message.answer("Пустой запрос.")
+        await message.answer(texts.HR_EMPTY_QUERY)
         await state.clear()
         return
 
     apps = await search_applications(session, query_text, limit=20)
     if not apps:
-        await message.answer("Заявки не найдены.")
+        await message.answer(texts.HR_NO_APPLICATIONS_FOUND)
         await state.clear()
         return
 
@@ -188,6 +189,8 @@ async def hr_search_execute(
     builder.adjust(1)
 
     await message.answer(
-        f"Найдено заявок: {len(apps)}", reply_markup=builder.as_markup()
+        texts.HR_APPLICATIONS_FOUND.format(count=len(apps)),
+        reply_markup=builder.as_markup(),
     )
+    await message.answer(texts.HR_WELCOME, reply_markup=hr_main_menu())
     await state.clear()

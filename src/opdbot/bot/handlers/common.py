@@ -1,11 +1,15 @@
-from aiogram import Router
+from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from opdbot.bot import texts
-from opdbot.bot.keyboards.main_menu import candidate_main_menu, hr_main_menu
+from opdbot.bot.keyboards.main_menu import (
+    candidate_main_menu,
+    cancel_reply_keyboard,
+    hr_main_menu,
+)
 from opdbot.bot.states.candidate import OnboardingStates
 from opdbot.config import settings
 from opdbot.db.models import UserRole
@@ -47,10 +51,10 @@ async def cmd_start(message: Message, state: FSMContext, session: AsyncSession, 
 
     if not user.full_name:
         await state.set_state(OnboardingStates.waiting_full_name)
-        await message.answer(texts.WELCOME)
+        await message.answer(texts.WELCOME, reply_markup=cancel_reply_keyboard())
     else:
         await state.set_state(OnboardingStates.waiting_phone)
-        await message.answer(texts.ASK_PHONE)
+        await message.answer(texts.ASK_PHONE, reply_markup=cancel_reply_keyboard())
 
 
 @router.message(Command("help"))
@@ -59,6 +63,7 @@ async def cmd_help(message: Message) -> None:
 
 
 @router.message(Command("cancel"))
+@router.message(F.text == texts.BTN_CANCEL_REPLY)
 async def cmd_cancel(
     message: Message, state: FSMContext, session: AsyncSession, role: UserRole
 ) -> None:

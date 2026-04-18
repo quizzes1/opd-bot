@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from opdbot.bot import texts
+from opdbot.bot.keyboards.main_menu import cancel_reply_keyboard, hr_main_menu
 from opdbot.bot.states.hr import HrCharacteristicStates, HrMedicalDateStates
 from opdbot.db.models import (
     AuditLog,
@@ -22,11 +23,7 @@ from opdbot.services.storage import get_absolute_path
 
 router = Router(name="hr_documents_gen")
 
-GEN_DOC_LABELS = {
-    GeneratedDocumentKind.application_form.value: "Заявление",
-    GeneratedDocumentKind.medical_referral.value: "Направление на медосмотр",
-    GeneratedDocumentKind.practice_characteristic.value: "Характеристика",
-}
+GEN_DOC_LABELS = texts.HR_DOCGEN_LABELS
 
 
 @router.callback_query(F.data.startswith("hr:medical:"))
@@ -39,14 +36,14 @@ async def hr_send_medical_referral(
     app_id = int(callback.data.split(":")[2])  # type: ignore[union-attr]
     app = await get_application(session, app_id)
     if not app:
-        await callback.answer("Заявка не найдена.")
+        await callback.answer(texts.HR_APP_NOT_FOUND)
         return
 
     try:
         file_rel = await doc_service.render_medical_referral(app)
     except Exception as e:
         if callback.message:
-            await callback.message.edit_text(f"Ошибка генерации документа: {e}")
+            await callback.message.edit_text(texts.HR_DOCGEN_ERROR.format(error=e))
         await callback.answer()
         return
 
@@ -72,6 +69,9 @@ async def hr_send_medical_referral(
     await state.update_data(app_id=app_id)
     if callback.message:
         await callback.message.edit_text(texts.HR_MEDICAL_ASK_DATE)
+        await callback.message.answer(
+            texts.HR_MEDICAL_ASK_DATE, reply_markup=cancel_reply_keyboard()
+        )
     await callback.answer()
 
 
@@ -82,7 +82,7 @@ async def hr_set_medical_date(
     try:
         dt = datetime.strptime((message.text or "").strip(), "%d.%m.%Y %H:%M")
     except ValueError:
-        await message.answer("Неверный формат. Введите ДД.ММ.ГГГГ ЧЧ:ММ.")
+        await message.answer(texts.HR_DOCGEN_BAD_DATETIME)
         return
 
     data = await state.get_data()
@@ -90,7 +90,7 @@ async def hr_set_medical_date(
 
     app = await get_application(session, app_id)
     if not app:
-        await message.answer("Заявка не найдена.")
+        await message.answer(texts.HR_APP_NOT_FOUND)
         await state.clear()
         return
 
@@ -114,7 +114,8 @@ async def hr_set_medical_date(
     )
 
     await message.answer(
-        texts.HR_MEDICAL_DATE_SET.format(dt=dt.strftime("%d.%m.%Y %H:%M"))
+        texts.HR_MEDICAL_DATE_SET.format(dt=dt.strftime("%d.%m.%Y %H:%M")),
+        reply_markup=hr_main_menu(),
     )
     await state.clear()
 
@@ -130,7 +131,10 @@ async def hr_characteristic_start(
     await state.set_state(HrCharacteristicStates.waiting_supervisor)
     await state.update_data(app_id=app_id)
     if callback.message:
-        await callback.message.edit_text("Введите ФИО руководителя практики/стажировки:")
+        await callback.message.delete()
+        await callback.message.answer(
+            texts.HR_DOCGEN_ASK_SUPERVISOR, reply_markup=cancel_reply_keyboard()
+        )
     await callback.answer()
 
 
@@ -138,14 +142,14 @@ async def hr_characteristic_start(
 async def hr_characteristic_supervisor(message: Message, state: FSMContext) -> None:
     await state.update_data(supervisor=message.text or "")
     await state.set_state(HrCharacteristicStates.waiting_topic)
-    await message.answer("Введите тему практики/стажировки:")
+    await message.answer(texts.HR_DOCGEN_ASK_TOPIC)
 
 
 @router.message(HrCharacteristicStates.waiting_topic)
 async def hr_characteristic_topic(message: Message, state: FSMContext) -> None:
     await state.update_data(topic=message.text or "")
     await state.set_state(HrCharacteristicStates.waiting_period_from)
-    await message.answer("Введите дату начала (ДД.ММ.ГГГГ):")
+    await message.answer(texts.HR_DOCGEN_ASK_PERIOD_FROM)
 
 
 @router.message(HrCharacteristicStates.waiting_period_from)
@@ -153,11 +157,11 @@ async def hr_characteristic_period_from(message: Message, state: FSMContext) -> 
     try:
         dt = datetime.strptime((message.text or "").strip(), "%d.%m.%Y")
     except ValueError:
-        await message.answer("Неверный формат. Введите дату ДД.ММ.ГГГГ:")
+        await message.answer(texts.HR_DOCGEN_BAD_DATE)
         return
     await state.update_data(period_from=dt.isoformat())
     await state.set_state(HrCharacteristicStates.waiting_period_to)
-    await message.answer("Введите дату окончания (ДД.ММ.ГГГГ):")
+    await message.answer(texts.HR_DOCGEN_ASK_PERIOD_TO)
 
 
 @router.message(HrCharacteristicStates.waiting_period_to)
@@ -167,7 +171,7 @@ async def hr_characteristic_period_to(
     try:
         dt_to = datetime.strptime((message.text or "").strip(), "%d.%m.%Y")
     except ValueError:
-        await message.answer("Неверный формат. Введите дату ДД.ММ.ГГГГ:")
+        await message.answer(texts.HR_DOCGEN_BAD_DATE)
         return
 
     data = await state.get_data()
@@ -177,12 +181,12 @@ async def hr_characteristic_period_to(
     period_from = datetime.fromisoformat(data["period_from"])
 
     if dt_to < period_from:
-        await message.answer("Дата окончания должна быть не раньше даты начала.")
+        await message.answer(texts.HR_DOCGEN_PERIOD_INVALID)
         return
 
     app = await get_application(session, app_id)
     if not app:
-        await message.answer("Заявка не найдена.")
+        await message.answer(texts.HR_APP_NOT_FOUND)
         await state.clear()
         return
 
@@ -191,7 +195,7 @@ async def hr_characteristic_period_to(
             app, supervisor=supervisor, topic=topic, period_from=period_from, period_to=dt_to
         )
     except Exception as e:
-        await message.answer(f"Ошибка генерации документа: {e}")
+        await message.answer(texts.HR_DOCGEN_ERROR.format(error=e))
         await state.clear()
         return
 
@@ -206,8 +210,9 @@ async def hr_characteristic_period_to(
 
     await message.answer_document(
         FSInputFile(get_absolute_path(file_rel)),
-        caption=f"Характеристика по заявке #{app_id}",
+        caption=texts.HR_DOCGEN_CHAR_CAPTION.format(app_id=app_id),
     )
+    await message.answer(texts.HR_WELCOME, reply_markup=hr_main_menu())
     await state.clear()
 
 
@@ -221,13 +226,13 @@ async def hr_show_generated_docs(
     app_id = int(callback.data.split(":")[2])  # type: ignore[union-attr]
     app = await get_application(session, app_id)
     if not app:
-        await callback.answer("Заявка не найдена.")
+        await callback.answer(texts.HR_APP_NOT_FOUND)
         return
 
     gen_docs = app.generated_documents
     if not gen_docs:
         if callback.message:
-            await callback.message.edit_text("Сгенерированных документов нет.")
+            await callback.message.edit_text(texts.HR_DOCGEN_EMPTY)
         await callback.answer()
         return
 
@@ -243,7 +248,7 @@ async def hr_show_generated_docs(
 
     if callback.message:
         await callback.message.edit_text(
-            f"Сгенерированные документы по заявке #{app_id}:",
+            texts.HR_DOCGEN_LIST_HEADER.format(app_id=app_id),
             reply_markup=builder.as_markup(),
         )
     await callback.answer()
@@ -262,12 +267,12 @@ async def hr_download_generated_doc(
     )
     gd = result.scalar_one_or_none()
     if not gd:
-        await callback.answer("Документ не найден.")
+        await callback.answer(texts.HR_DOC_NOT_FOUND)
         return
 
     file_path = get_absolute_path(gd.file_path)
     if not file_path.exists():
-        await callback.answer("Файл не найден на диске.")
+        await callback.answer(texts.HR_FILE_MISSING)
         return
 
     session.add(
