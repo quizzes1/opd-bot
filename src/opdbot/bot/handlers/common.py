@@ -59,7 +59,7 @@ async def cmd_start(message: Message, state: FSMContext, session: AsyncSession, 
 
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
-    await message.answer(texts.HELP_TEXT)
+    await message.answer(texts.HELP_TEXT, parse_mode="HTML")
 
 
 @router.message(Command("cancel"))
@@ -108,3 +108,38 @@ async def cmd_grant_hr(message: Message, session: AsyncSession) -> None:
         await message.answer(texts.HR_GRANT_SUCCESS.format(tg_id=target_tg_id))
     else:
         await message.answer(texts.HR_GRANT_NOT_FOUND.format(tg_id=target_tg_id))
+
+
+@router.message(Command("switch_role"))
+async def cmd_switch_role(
+    message: Message, state: FSMContext, session: AsyncSession
+) -> None:
+    if not settings.dev_mode:
+        return
+    tg_user = message.from_user
+    if tg_user is None:
+        return
+
+    await state.clear()
+    user, _ = await get_or_create_user(
+        session,
+        tg_id=tg_user.id,
+        tg_username=tg_user.username,
+        full_name=tg_user.full_name,
+    )
+    new_role = UserRole.hr if user.role == UserRole.candidate else UserRole.candidate
+    user = await set_user_role(session, tg_user.id, new_role)
+    if user is None:
+        return
+
+    if new_role in (UserRole.hr, UserRole.admin):
+        await message.answer(
+            "🛠 Режим разработчика: роль изменена на HR.",
+            reply_markup=hr_main_menu(),
+        )
+    else:
+        has_active = await get_active_application(session, user.id) is not None
+        await message.answer(
+            "🛠 Режим разработчика: роль изменена на Студент.",
+            reply_markup=candidate_main_menu(has_active),
+        )

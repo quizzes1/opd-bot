@@ -5,6 +5,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.base import BaseStorage
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import BotCommand
 from aiohttp import web
 from loguru import logger
 
@@ -60,6 +61,19 @@ def register_routers(dp: Dispatcher) -> None:
     dp.include_router(fallback_router)
 
 
+async def setup_bot_commands(bot: Bot) -> None:
+    commands = [
+        BotCommand(command="start", description="Запустить / перезапустить бота"),
+        BotCommand(command="help", description="Справка и список команд"),
+        BotCommand(command="cancel", description="Отменить текущее действие"),
+    ]
+    if settings.dev_mode:
+        commands.append(
+            BotCommand(command="switch_role", description="DEV: сменить роль")
+        )
+    await bot.set_my_commands(commands)
+
+
 async def _health(_: web.Request) -> web.Response:
     return web.json_response({"status": "ok"})
 
@@ -104,6 +118,7 @@ async def main() -> None:
     dp.update.outer_middleware(RoleMiddleware())
 
     register_routers(dp)
+    await setup_bot_commands(bot)
 
     if settings.webhook_url:
         await run_webhook(bot, dp)

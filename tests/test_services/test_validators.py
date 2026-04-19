@@ -17,3 +17,23 @@ def test_file_too_large():
 def test_jpeg_alias():
     assert validate_file("image/jpeg", 1024, "jpg", 10) is None
     assert validate_file("image/jpg", 1024, "jpeg", 10) is None
+
+
+def test_doc_alias_for_docx():
+    # requirements say "pdf,docx" — .doc files must also pass
+    assert (
+        validate_file(
+            "application/msword", 1024, "pdf,docx", 10, filename="file.doc"
+        )
+        is None
+    )
+    assert (
+        validate_file(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            1024,
+            "pdf,doc",
+            10,
+            filename="file.docx",
+        )
+        is None
+    )

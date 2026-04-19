@@ -33,6 +33,14 @@ MIME_TO_EXT = {
 }
 
 
+EXT_ALIASES: dict[str, set[str]] = {
+    "jpg": {"jpg", "jpeg"},
+    "jpeg": {"jpg", "jpeg"},
+    "doc": {"doc", "docx"},
+    "docx": {"doc", "docx"},
+}
+
+
 def _norm_ext(ext: str) -> str:
     ext = ext.lower().lstrip(".")
     return "jpg" if ext == "jpeg" else ext
@@ -45,7 +53,10 @@ def validate_file(
     max_size_mb: int,
     filename: str | None = None,
 ) -> str | None:
-    allowed = {_norm_ext(x.strip()) for x in allowed_mime.split(",") if x.strip()}
+    allowed_raw = {_norm_ext(x.strip()) for x in allowed_mime.split(",") if x.strip()}
+    allowed = set(allowed_raw)
+    for ext in allowed_raw:
+        allowed |= EXT_ALIASES.get(ext, set())
 
     ext_from_name = _norm_ext(Path(filename).suffix) if filename else ""
     ext_from_mime = MIME_TO_EXT.get((mime or "").lower(), "")

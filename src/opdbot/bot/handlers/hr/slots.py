@@ -28,20 +28,27 @@ async def hr_slots_menu(message: Message, role: UserRole, session: AsyncSession)
         return
 
     slots = await list_slots(session)
-    lines = []
-    for slot in slots[:20]:
-        kind_label = texts.SLOT_KIND_LABELS.get(slot.kind.value, slot.kind.value)
-        dt = slot.starts_at.strftime("%d.%m.%Y %H:%M")
-        free = slot.capacity - slot.booked_count
-        lines.append(
-            texts.HR_SLOT_LINE.format(
-                kind_label=kind_label,
-                dt=dt,
-                free=free,
-                capacity=slot.capacity,
-                slot_id=slot.id,
+    kind_order = (SlotKind.interview, SlotKind.medical, SlotKind.training)
+    by_kind: dict[SlotKind, list] = {k: [] for k in kind_order}
+    for slot in slots:
+        by_kind.setdefault(slot.kind, []).append(slot)
+
+    sections: list[str] = []
+    for kind in kind_order:
+        label = texts.SLOT_KIND_LABELS.get(kind.value, kind.value)
+        sections.append(texts.HR_SLOT_GROUP_HEADER.format(kind_label_title=label.capitalize()))
+        group = by_kind.get(kind, [])
+        if not group:
+            sections.append(texts.HR_SLOT_GROUP_EMPTY)
+            continue
+        for slot in group:
+            dt = slot.starts_at.strftime("%d.%m.%Y %H:%M")
+            free = slot.capacity - slot.booked_count
+            sections.append(
+                texts.HR_SLOT_GROUP_LINE.format(
+                    dt=dt, free=free, capacity=slot.capacity, slot_id=slot.id
+                )
             )
-        )
 
     builder = InlineKeyboardBuilder()
     builder.button(text="➕ Создать слот", callback_data="hr:slot:create")
@@ -49,9 +56,9 @@ async def hr_slots_menu(message: Message, role: UserRole, session: AsyncSession)
         builder.button(text=f"❌ Удалить #{slot.id}", callback_data=f"hr:slot:del:{slot.id}")
     builder.adjust(1)
 
-    body = "\n".join(lines) if lines else texts.HR_SLOTS_EMPTY
+    body = "\n".join(sections)
     text = f"{texts.HR_SLOTS_HEADER}\n{body}"
-    await message.answer(text, reply_markup=builder.as_markup())
+    await message.answer(text, parse_mode="HTML", reply_markup=builder.as_markup())
 
 
 @router.callback_query(F.data == "hr:slot:create")
@@ -84,6 +91,9 @@ async def hr_slot_date(message: Message, state: FSMContext) -> None:
         dt = datetime.strptime(text, "%d.%m.%Y %H:%M")
     except ValueError:
         await message.answer(texts.HR_SLOT_BAD_DATE)
+        return
+    if dt <= datetime.now():
+        await message.answer(texts.HR_SLOT_DATE_IN_PAST)
         return
     await state.update_data(slot_starts_at=dt.isoformat())
     await state.set_state(HrSlotStates.waiting_duration)

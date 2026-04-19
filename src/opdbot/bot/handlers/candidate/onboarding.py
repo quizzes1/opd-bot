@@ -10,6 +10,7 @@ from opdbot.bot.keyboards.main_menu import candidate_main_menu, cancel_reply_key
 from opdbot.bot.states.candidate import OnboardingStates
 from opdbot.db.models import Goal
 from opdbot.db.repo.applications import create_application, get_active_application
+from opdbot.db.repo.documents import get_requirements_for_goal
 from opdbot.db.repo.users import get_user_by_tg_id, update_user
 from opdbot.utils.validators import validate_phone
 
@@ -91,8 +92,19 @@ async def handle_goal_selected(
     await state.clear()
     await state.update_data(application_id=application.id)
 
+    requirements = await get_requirements_for_goal(session, goal_id)
+    docs_lines = [
+        texts.DOCS_LIST_ITEM.format(
+            title=r.title,
+            mark=texts.DOCS_LIST_REQUIRED if r.is_required else texts.DOCS_LIST_OPTIONAL,
+            formats=r.allowed_mime,
+        )
+        for r in requirements
+    ]
+    docs_list = "\n".join(docs_lines) if docs_lines else "—"
+
     await callback.message.edit_text(  # type: ignore[union-attr]
-        texts.GOAL_SELECTED.format(goal=goal.title),
+        texts.GOAL_SELECTED.format(goal=goal.title, docs_list=docs_list),
         parse_mode="HTML",
     )
     await callback.message.answer(texts.MAIN_MENU, reply_markup=candidate_main_menu(True))  # type: ignore[union-attr]

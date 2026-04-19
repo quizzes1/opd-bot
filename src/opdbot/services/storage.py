@@ -1,4 +1,5 @@
 import re
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -23,9 +24,10 @@ async def save_tg_file(
     req_code: str,
     filename: str,
 ) -> Path:
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    suffix = uuid.uuid4().hex[:6]
     ext = Path(filename).suffix or ".bin"
-    safe_name = f"{_sanitize(req_code)}_{ts}{ext}"
+    safe_name = f"{_sanitize(req_code)}_{ts}_{suffix}{ext}"
 
     root = storage_root()
     dest_dir = root / str(user_id) / str(application_id)
