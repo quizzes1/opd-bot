@@ -11,15 +11,19 @@ from opdbot.bot import texts
 from opdbot.bot.keyboards.main_menu import cancel_reply_keyboard, hr_main_menu
 from opdbot.bot.states.hr import HrCharacteristicStates, HrMedicalDateStates
 from opdbot.db.models import (
+    ApplicationStatus,
     AuditLog,
     GeneratedDocument,
     GeneratedDocumentKind,
+    SlotKind,
     UserRole,
 )
 from opdbot.db.repo.applications import get_application, set_medical_date
+from opdbot.db.repo.slots import book_slot, find_slot_by_start
 from opdbot.services import documents as doc_service
 from opdbot.services import notifications
 from opdbot.services.storage import get_absolute_path
+from opdbot.utils.validators import validate_supervisor_fio
 
 router = Router(name="hr_documents_gen")
 
@@ -37,6 +41,9 @@ async def hr_send_medical_referral(
     app = await get_application(session, app_id)
     if not app:
         await callback.answer(texts.HR_APP_NOT_FOUND)
+        return
+    if app.status == ApplicationStatus.cancelled:
+        await callback.answer(texts.HR_APP_CANCELLED_BY_CANDIDATE, show_alert=True)
         return
 
     try:
@@ -68,7 +75,6 @@ async def hr_send_medical_referral(
     await state.set_state(HrMedicalDateStates.waiting_date)
     await state.update_data(app_id=app_id)
     if callback.message:
-        await callback.message.edit_text(texts.HR_MEDICAL_ASK_DATE)
         await callback.message.answer(
             texts.HR_MEDICAL_ASK_DATE, reply_markup=cancel_reply_keyboard()
         )
@@ -93,6 +99,10 @@ async def hr_set_medical_date(
         await message.answer(texts.HR_APP_NOT_FOUND)
         await state.clear()
         return
+
+    slot = await find_slot_by_start(session, SlotKind.medical, dt)
+    if slot is not None:
+        await book_slot(session, slot.id)
 
     await set_medical_date(session, app, dt)
     session.add(
@@ -122,12 +132,21 @@ async def hr_set_medical_date(
 
 @router.callback_query(F.data.startswith("hr:characteristic:"))
 async def hr_characteristic_start(
-    callback: CallbackQuery, state: FSMContext, role: UserRole
+    callback: CallbackQuery, state: FSMContext, session: AsyncSession, role: UserRole
 ) -> None:
     if role not in (UserRole.hr, UserRole.admin):
         return
 
     app_id = int(callback.data.split(":")[2])  # type: ignore[union-attr]
+    from opdbot.db.repo.applications import get_application as _ga
+
+    app = await _ga(session, app_id)
+    if not app:
+        await callback.answer(texts.HR_APP_NOT_FOUND)
+        return
+    if app.status == ApplicationStatus.cancelled:
+        await callback.answer(texts.HR_APP_CANCELLED_BY_CANDIDATE, show_alert=True)
+        return
     await state.set_state(HrCharacteristicStates.waiting_supervisor)
     await state.update_data(app_id=app_id)
     if callback.message:
@@ -140,7 +159,11 @@ async def hr_characteristic_start(
 
 @router.message(HrCharacteristicStates.waiting_supervisor)
 async def hr_characteristic_supervisor(message: Message, state: FSMContext) -> None:
-    await state.update_data(supervisor=message.text or "")
+    supervisor = validate_supervisor_fio(message.text or "")
+    if supervisor is None:
+        await message.answer(texts.BAD_SUPERVISOR_FIO)
+        return
+    await state.update_data(supervisor=supervisor)
     await state.set_state(HrCharacteristicStates.waiting_topic)
     await message.answer(texts.HR_DOCGEN_ASK_TOPIC)
 
@@ -208,10 +231,20 @@ async def hr_characteristic_period_to(
     )
     await session.flush()
 
+    abs_path = get_absolute_path(file_rel)
     await message.answer_document(
-        FSInputFile(get_absolute_path(file_rel)),
+        FSInputFile(abs_path),
         caption=texts.HR_DOCGEN_CHAR_CAPTION.format(app_id=app_id),
     )
+
+    await session.refresh(app, ["user"])
+    await notifications.notify_user(
+        bot=message.bot,  # type: ignore[arg-type]
+        tg_id=app.user.tg_id,
+        text=texts.NOTIFY_CHARACTERISTIC.format(app_id=app_id),
+        document=FSInputFile(abs_path),
+    )
+
     await message.answer(texts.HR_WELCOME, reply_markup=hr_main_menu())
     await state.clear()
 

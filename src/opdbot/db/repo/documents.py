@@ -25,6 +25,7 @@ async def save_document(
     original_name: str | None = None,
     mime: str | None = None,
     size_bytes: int | None = None,
+    sha256: str | None = None,
 ) -> Document:
     # Supersede previous documents for this requirement
     prev_result = await session.execute(
@@ -45,11 +46,26 @@ async def save_document(
         original_name=original_name,
         mime=mime,
         size_bytes=size_bytes,
+        sha256=sha256,
         status=DocumentStatus.uploaded,
     )
     session.add(doc)
     await session.flush()
     return doc
+
+
+async def find_duplicate_by_sha(
+    session: AsyncSession, application_id: int, requirement_id: int, sha256: str
+) -> Document | None:
+    result = await session.execute(
+        select(Document).where(
+            Document.application_id == application_id,
+            Document.requirement_id == requirement_id,
+            Document.sha256 == sha256,
+            Document.status != DocumentStatus.superseded,
+        )
+    )
+    return result.scalars().first()
 
 
 async def get_documents_for_application(

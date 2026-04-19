@@ -1,6 +1,9 @@
+from datetime import datetime
+
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, FSInputFile, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,9 +19,15 @@ from opdbot.db.models import (
     DocumentRequirement,
     DocumentStatus,
     MessageFromRole,
+    SlotKind,
     UserRole,
 )
-from opdbot.db.repo.applications import get_application, update_application_status
+from opdbot.db.repo.applications import (
+    get_application,
+    set_interview_slot,
+    update_application_status,
+)
+from opdbot.db.repo.slots import book_slot, free_slot_by_start, get_available_slots
 from opdbot.db.repo.documents import (
     get_documents_for_application,
     get_requirements_for_goal,
@@ -30,25 +39,30 @@ from opdbot.services.storage import get_absolute_path
 router = Router(name="hr_review")
 
 
-@router.callback_query(F.data.startswith("hr:docs:"))
-async def hr_show_documents(
-    callback: CallbackQuery, session: AsyncSession, role: UserRole
-) -> None:
-    if role not in (UserRole.hr, UserRole.admin):
-        await callback.answer(texts.HR_NO_ACCESS)
-        return
+async def _guard_cancelled(callback: CallbackQuery, app) -> bool:
+    if app.status == ApplicationStatus.cancelled:
+        await callback.answer(texts.HR_APP_CANCELLED_BY_CANDIDATE, show_alert=True)
+        return True
+    return False
 
-    app_id = int(callback.data.split(":")[2])  # type: ignore[union-attr]
+
+async def _free_app_bookings(session: AsyncSession, app) -> None:
+    if app.interview_at:
+        await free_slot_by_start(session, SlotKind.interview, app.interview_at)
+        app.interview_at = None
+    if app.training_at:
+        await free_slot_by_start(session, SlotKind.training, app.training_at)
+        app.training_at = None
+    if app.medical_at:
+        await free_slot_by_start(session, SlotKind.medical, app.medical_at)
+        app.medical_at = None
+    await session.flush()
+
+
+async def _render_docs_list(session: AsyncSession, app_id: int):
     docs = await get_documents_for_application(session, app_id)
-
     if not docs:
-        if callback.message:
-            await callback.message.edit_text(texts.HR_REVIEW_NO_DOCS)
-        await callback.answer()
-        return
-
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
-
+        return texts.HR_REVIEW_NO_DOCS, None
     builder = InlineKeyboardBuilder()
     for doc in docs:
         req_title = doc.requirement.title if doc.requirement else str(doc.requirement_id)
@@ -58,12 +72,21 @@ async def hr_show_documents(
         )
     builder.button(text="◀️ Назад", callback_data=f"hr:app:{app_id}")
     builder.adjust(1)
+    return texts.HR_REVIEW_DOCS_HEADER.format(app_id=app_id), builder.as_markup()
 
+
+@router.callback_query(F.data.startswith("hr:docs:"))
+async def hr_show_documents(
+    callback: CallbackQuery, session: AsyncSession, role: UserRole
+) -> None:
+    if role not in (UserRole.hr, UserRole.admin):
+        await callback.answer(texts.HR_NO_ACCESS)
+        return
+
+    app_id = int(callback.data.split(":")[2])  # type: ignore[union-attr]
+    text, markup = await _render_docs_list(session, app_id)
     if callback.message:
-        await callback.message.edit_text(
-            texts.HR_REVIEW_DOCS_HEADER.format(app_id=app_id),
-            reply_markup=builder.as_markup(),
-        )
+        await callback.message.edit_text(text, reply_markup=markup)
     await callback.answer()
 
 
@@ -161,11 +184,10 @@ async def hr_approve_document(
     )
 
     req_title = doc.requirement.title if doc.requirement else "—"
+    text, markup = await _render_docs_list(session, doc.application_id)
     if callback.message:
-        await callback.message.edit_text(
-            texts.HR_DOC_APPROVED.format(title=req_title),
-        )
-    await callback.answer()
+        await callback.message.edit_text(text, reply_markup=markup)
+    await callback.answer(texts.HR_DOC_APPROVED.format(title=req_title), show_alert=False)
 
 
 @router.callback_query(F.data.startswith("hr:reject_doc:"))
@@ -227,9 +249,9 @@ async def hr_reject_doc_reason(
         )
 
     req_title = doc.requirement.title if doc.requirement else "—"
-    await message.answer(
-        texts.HR_DOC_REJECTED.format(title=req_title), reply_markup=hr_main_menu()
-    )
+    await message.answer(texts.HR_DOC_REJECTED.format(title=req_title))
+    text, markup = await _render_docs_list(session, doc.application_id)
+    await message.answer(text, reply_markup=markup)
     await state.clear()
 
 
@@ -244,6 +266,8 @@ async def hr_approve_application(
     app = await get_application(session, app_id)
     if not app:
         await callback.answer(texts.HR_APP_NOT_FOUND)
+        return
+    if await _guard_cancelled(callback, app):
         return
 
     await update_application_status(session, app, ApplicationStatus.approved)
@@ -282,7 +306,10 @@ async def hr_reject_application(
     if not app:
         await callback.answer(texts.HR_APP_NOT_FOUND)
         return
+    if await _guard_cancelled(callback, app):
+        return
 
+    await _free_app_bookings(session, app)
     await update_application_status(session, app, ApplicationStatus.rejected)
     session.add(
         AuditLog(
@@ -320,6 +347,7 @@ async def hr_cancel_application(
         await callback.answer(texts.HR_APP_NOT_FOUND)
         return
 
+    await _free_app_bookings(session, app)
     await update_application_status(session, app, ApplicationStatus.cancelled)
     session.add(
         AuditLog(
@@ -355,6 +383,9 @@ async def hr_request_document(
     app = await get_application(session, app_id)
     if not app:
         await callback.answer(texts.HR_APP_NOT_FOUND)
+        return
+
+    if await _guard_cancelled(callback, app):
         return
 
     requirements = await get_requirements_for_goal(session, app.goal_id)
@@ -405,10 +436,17 @@ async def hr_send_doc_request(
             requested_doc_code=req.code,
         )
     )
+    student_kb = InlineKeyboardBuilder()
+    student_kb.button(
+        text="📎 Прислать документ",
+        callback_data=f"candidate:req_doc:{app.id}:{req.id}",
+    )
+    student_kb.adjust(1)
     await notifications.notify_user(
         bot=callback.bot,  # type: ignore[arg-type]
         tg_id=app.user.tg_id,
         text=texts.NOTIFY_DOC_REQUESTED.format(app_id=app.id, title=req.title),
+        reply_markup=student_kb.as_markup(),
     )
 
     if callback.message:
@@ -421,12 +459,18 @@ async def hr_send_doc_request(
 
 @router.callback_query(F.data.startswith("hr:message:"))
 async def hr_message_start(
-    callback: CallbackQuery, state: FSMContext, role: UserRole
+    callback: CallbackQuery, state: FSMContext, session: AsyncSession, role: UserRole
 ) -> None:
     if role not in (UserRole.hr, UserRole.admin):
         return
 
     app_id = int(callback.data.split(":")[2])  # type: ignore[union-attr]
+    app = await get_application(session, app_id)
+    if not app:
+        await callback.answer(texts.HR_APP_NOT_FOUND)
+        return
+    if await _guard_cancelled(callback, app):
+        return
     await state.set_state(HrMessageStates.waiting_text)
     await state.update_data(app_id=app_id)
     if callback.message:
@@ -468,3 +512,87 @@ async def hr_message_send(
 
     await message.answer(texts.HR_REVIEW_MESSAGE_SENT, reply_markup=hr_main_menu())
     await state.clear()
+
+
+@router.callback_query(F.data.startswith("hr:set_interview:"))
+async def hr_set_interview_start(
+    callback: CallbackQuery, session: AsyncSession, role: UserRole
+) -> None:
+    if role not in (UserRole.hr, UserRole.admin):
+        return
+
+    app_id = int(callback.data.split(":")[2])  # type: ignore[union-attr]
+    app = await get_application(session, app_id)
+    if not app:
+        await callback.answer(texts.HR_APP_NOT_FOUND)
+        return
+    if await _guard_cancelled(callback, app):
+        return
+    slots = await get_available_slots(session, SlotKind.interview, from_dt=datetime.now())
+    if not slots:
+        await callback.answer(texts.HR_ASSIGN_NO_SLOTS, show_alert=True)
+        return
+
+    builder = InlineKeyboardBuilder()
+    for slot in slots:
+        dt = slot.starts_at.strftime("%d.%m.%Y %H:%M")
+        free = slot.capacity - slot.booked_count
+        builder.button(
+            text=f"{dt} (свободно {free}/{slot.capacity})",
+            callback_data=f"hr:pick_interview:{app_id}:{slot.id}",
+        )
+    builder.button(text="◀️ Назад", callback_data=f"hr:app:{app_id}")
+    builder.adjust(1)
+
+    if callback.message:
+        await callback.message.edit_text(
+            texts.HR_ASSIGN_INTERVIEW_HEADER.format(app_id=app_id),
+            reply_markup=builder.as_markup(),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("hr:pick_interview:"))
+async def hr_pick_interview(
+    callback: CallbackQuery, session: AsyncSession, role: UserRole
+) -> None:
+    if role not in (UserRole.hr, UserRole.admin):
+        return
+
+    parts = callback.data.split(":")  # type: ignore[union-attr]
+    app_id = int(parts[2])
+    slot_id = int(parts[3])
+
+    app = await get_application(session, app_id)
+    if not app:
+        await callback.answer(texts.HR_APP_NOT_FOUND)
+        return
+
+    slot = await book_slot(session, slot_id)
+    if slot is None:
+        await callback.answer(texts.HR_ASSIGN_INTERVIEW_TAKEN, show_alert=True)
+        return
+
+    await set_interview_slot(session, app, slot.starts_at)
+    session.add(
+        AuditLog(
+            application_id=app_id,
+            actor_tg_id=callback.from_user.id if callback.from_user else None,
+            event="interview_scheduled",
+            details=f"slot_id={slot.id}",
+        )
+    )
+
+    await session.refresh(app, ["user"])
+    dt_str = slot.starts_at.strftime("%d.%m.%Y %H:%M")
+    await notifications.notify_user(
+        bot=callback.bot,  # type: ignore[arg-type]
+        tg_id=app.user.tg_id,
+        text=texts.NOTIFY_INTERVIEW_SCHEDULED.format(app_id=app_id, dt=dt_str),
+    )
+
+    if callback.message:
+        await callback.message.edit_text(
+            texts.HR_ASSIGN_INTERVIEW_SUCCESS.format(dt=dt_str)
+        )
+    await callback.answer()

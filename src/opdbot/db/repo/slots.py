@@ -68,3 +68,55 @@ async def list_slots(session: AsyncSession, kind: SlotKind | None = None) -> lis
         query = query.where(Slot.kind == kind)
     result = await session.execute(query)
     return list(result.scalars().all())
+
+
+async def find_overlapping_slot(
+    session: AsyncSession,
+    kind: SlotKind,
+    starts_at: datetime,
+    ends_at: datetime,
+) -> Slot | None:
+    """Return an active slot of the same kind overlapping the given interval."""
+    result = await session.execute(
+        select(Slot).where(
+            Slot.kind == kind,
+            Slot.is_active.is_(True),
+            Slot.starts_at < ends_at,
+            Slot.ends_at > starts_at,
+        )
+    )
+    return result.scalars().first()
+
+
+async def find_slot_by_start(
+    session: AsyncSession,
+    kind: SlotKind,
+    starts_at: datetime,
+) -> Slot | None:
+    result = await session.execute(
+        select(Slot).where(
+            Slot.kind == kind,
+            Slot.is_active.is_(True),
+            Slot.starts_at == starts_at,
+            Slot.booked_count < Slot.capacity,
+        )
+    )
+    return result.scalars().first()
+
+
+async def free_slot_by_start(
+    session: AsyncSession,
+    kind: SlotKind,
+    starts_at: datetime,
+) -> None:
+    """Decrement booked_count for an active slot at the given start time."""
+    result = await session.execute(
+        select(Slot).where(
+            Slot.kind == kind,
+            Slot.starts_at == starts_at,
+        )
+    )
+    slot = result.scalars().first()
+    if slot and slot.booked_count > 0:
+        slot.booked_count -= 1
+        await session.flush()

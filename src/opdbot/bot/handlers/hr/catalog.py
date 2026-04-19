@@ -10,6 +10,11 @@ from opdbot.bot.keyboards.main_menu import cancel_reply_keyboard, hr_main_menu
 from opdbot.bot.states.hr import HrCatalogStates
 from opdbot.db.models import DocumentRequirement, Goal, UserRole
 from opdbot.db.repo.documents import get_requirements_for_goal
+from opdbot.utils.validators import (
+    ALLOWED_FORMATS_REGISTRY,
+    parse_allowed_formats,
+    validate_catalog_code,
+)
 
 router = Router(name="hr_catalog")
 
@@ -83,8 +88,8 @@ async def hr_catalog_doc_title(message: Message, state: FSMContext) -> None:
 
 @router.message(HrCatalogStates.waiting_doc_code)
 async def hr_catalog_doc_code(message: Message, state: FSMContext) -> None:
-    code = (message.text or "").strip().lower()
-    if not code.replace("_", "").isalpha():
+    code = validate_catalog_code(message.text or "")
+    if code is None:
         await message.answer(texts.HR_CATALOG_BAD_CODE)
         return
     await state.update_data(doc_code=code)
@@ -94,19 +99,47 @@ async def hr_catalog_doc_code(message: Message, state: FSMContext) -> None:
 
 @router.message(HrCatalogStates.waiting_doc_mime)
 async def hr_catalog_doc_mime(message: Message, state: FSMContext) -> None:
-    await state.update_data(doc_mime=message.text or "pdf,jpg,jpeg")
+    accepted, unknown = parse_allowed_formats(message.text or "")
+    if unknown or not accepted:
+        await message.answer(
+            texts.HR_CATALOG_BAD_MIME_LIST.format(
+                bad=", ".join(unknown) if unknown else "—",
+                allowed=", ".join(sorted(ALLOWED_FORMATS_REGISTRY)),
+            )
+        )
+        return
+    await state.update_data(doc_mime=",".join(accepted))
     await state.set_state(HrCatalogStates.waiting_doc_size)
     await message.answer(texts.HR_CATALOG_ASK_SIZE)
 
 
 @router.message(HrCatalogStates.waiting_doc_size)
-async def hr_catalog_doc_size(message: Message, state: FSMContext, session: AsyncSession) -> None:
+async def hr_catalog_doc_size(message: Message, state: FSMContext) -> None:
     try:
         max_size = int((message.text or "").strip())
-        if max_size <= 0:
-            raise ValueError
     except ValueError:
-        await message.answer(texts.HR_CATALOG_BAD_SIZE)
+        await message.answer(texts.HR_CATALOG_BAD_SIZE_RANGE)
+        return
+    if max_size < 1 or max_size > 20:
+        await message.answer(texts.HR_CATALOG_BAD_SIZE_RANGE)
+        return
+
+    await state.update_data(doc_max_size=max_size)
+    await state.set_state(HrCatalogStates.waiting_doc_required)
+    await message.answer(texts.HR_CATALOG_ASK_REQUIRED)
+
+
+@router.message(HrCatalogStates.waiting_doc_required)
+async def hr_catalog_doc_required(
+    message: Message, state: FSMContext, session: AsyncSession
+) -> None:
+    raw = (message.text or "").strip().lower()
+    if raw in ("", "да", "д", "yes", "y"):
+        is_required = True
+    elif raw in ("нет", "н", "no", "n"):
+        is_required = False
+    else:
+        await message.answer(texts.HR_CATALOG_BAD_REQUIRED)
         return
 
     data = await state.get_data()
@@ -114,6 +147,7 @@ async def hr_catalog_doc_size(message: Message, state: FSMContext, session: Asyn
     title: str = data["doc_title"]
     code: str = data["doc_code"]
     allowed_mime: str = data["doc_mime"]
+    max_size: int = int(data["doc_max_size"])
 
     existing = await get_requirements_for_goal(session, goal_id)
     order = len(existing)
@@ -125,6 +159,7 @@ async def hr_catalog_doc_size(message: Message, state: FSMContext, session: Asyn
         allowed_mime=allowed_mime,
         max_size_mb=max_size,
         order=order,
+        is_required=is_required,
     )
     session.add(req)
     await session.flush()

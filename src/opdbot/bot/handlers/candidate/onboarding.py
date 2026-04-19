@@ -12,16 +12,16 @@ from opdbot.db.models import Goal
 from opdbot.db.repo.applications import create_application, get_active_application
 from opdbot.db.repo.documents import get_requirements_for_goal
 from opdbot.db.repo.users import get_user_by_tg_id, update_user
-from opdbot.utils.validators import validate_phone
+from opdbot.utils.validators import validate_full_name, validate_phone
 
 router = Router(name="onboarding")
 
 
 @router.message(OnboardingStates.waiting_full_name)
 async def handle_full_name(message: Message, state: FSMContext, session: AsyncSession) -> None:
-    text = (message.text or "").strip()
-    if len(text.split()) < 2:
-        await message.answer("Пожалуйста, введите полное ФИО (минимум имя и фамилия).")
+    normalized = validate_full_name(message.text or "")
+    if normalized is None:
+        await message.answer(texts.BAD_FULL_NAME)
         return
 
     tg_user = message.from_user
@@ -29,9 +29,9 @@ async def handle_full_name(message: Message, state: FSMContext, session: AsyncSe
         return
     user = await get_user_by_tg_id(session, tg_user.id)
     if user:
-        await update_user(session, user, full_name=text)
+        await update_user(session, user, full_name=normalized)
 
-    await state.update_data(full_name=text)
+    await state.update_data(full_name=normalized)
     await state.set_state(OnboardingStates.waiting_phone)
     await message.answer(texts.ASK_PHONE, reply_markup=cancel_reply_keyboard())
 
@@ -40,7 +40,7 @@ async def handle_full_name(message: Message, state: FSMContext, session: AsyncSe
 async def handle_phone(message: Message, state: FSMContext, session: AsyncSession) -> None:
     phone = validate_phone(message.text or "")
     if phone is None:
-        await message.answer("Неверный формат номера. Попробуйте ещё раз (например: +79001234567).")
+        await message.answer(texts.BAD_PHONE)
         return
 
     tg_user = message.from_user

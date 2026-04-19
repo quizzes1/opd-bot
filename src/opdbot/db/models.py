@@ -184,6 +184,7 @@ class Document(Base):
     original_name: Mapped[Optional[str]] = mapped_column(String(256))
     mime: Mapped[Optional[str]] = mapped_column(String(128))
     size_bytes: Mapped[Optional[int]] = mapped_column(Integer)
+    sha256: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     status: Mapped[DocumentStatus] = mapped_column(
         Enum(DocumentStatus, native_enum=False, length=16),
         default=DocumentStatus.uploaded,

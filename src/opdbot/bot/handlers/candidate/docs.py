@@ -6,17 +6,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from opdbot.bot import texts
 from opdbot.bot.keyboards.main_menu import candidate_main_menu
-from opdbot.bot.states.candidate import DocUploadStates
+from opdbot.bot.states.candidate import DocRequestUploadStates, DocUploadStates
 from opdbot.db.models import ApplicationStatus, DocumentRequirement
 from opdbot.db.repo.applications import get_application, update_application_status
 from opdbot.db.repo.documents import (
+    find_duplicate_by_sha,
+    get_documents_for_application,
     get_requirements_for_goal,
     get_uploaded_requirement_ids,
     save_document,
 )
-from opdbot.db.repo.users import get_all_staff
+from opdbot.db.repo.users import get_all_staff, get_user_by_tg_id
+from sqlalchemy import select as sa_select
 from opdbot.services import notifications
-from opdbot.services.storage import save_tg_file
+from opdbot.services.storage import compute_sha256, get_absolute_path, save_tg_file
 from opdbot.utils.validators import TELEGRAM_DOWNLOAD_LIMIT_BYTES, validate_file
 
 router = Router(name="docs")
@@ -202,6 +205,16 @@ async def handle_document_upload(
         filename=file_name,
     )
 
+    sha = compute_sha256(get_absolute_path(file_path))
+    dup = await find_duplicate_by_sha(session, application_id, requirement_id, sha)
+    if dup is not None:
+        try:
+            get_absolute_path(file_path).unlink()
+        except OSError:
+            pass
+        await message.answer(texts.DOC_DUPLICATE)
+        return
+
     await save_document(
         session,
         application_id=application_id,
@@ -211,6 +224,7 @@ async def handle_document_upload(
         original_name=file_name,
         mime=mime,
         size_bytes=size,
+        sha256=sha,
     )
 
     await message.answer(
@@ -219,6 +233,33 @@ async def handle_document_upload(
     )
 
     await _advance(message, state, session, application_id, message.bot)
+
+
+@router.message(DocUploadStates.uploading)
+async def handle_unsupported_upload(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    data = await state.get_data()
+    requirement_id = data.get("requirement_id")
+    if requirement_id:
+        app_id = data.get("application_id")
+        app = await get_application(session, app_id) if app_id else None
+        if app:
+            requirements = await get_requirements_for_goal(session, app.goal_id)
+            req = next((r for r in requirements if r.id == requirement_id), None)
+            if req:
+                await message.answer(
+                    texts.DOC_UNSUPPORTED_CONTENT.format(allowed_mime=req.allowed_mime)
+                )
+                return
+    await message.answer(
+        texts.DOC_UNSUPPORTED_CONTENT.format(allowed_mime="pdf/jpg/png/doc/docx")
+    )
+
+
+@router.message(DocRequestUploadStates.waiting_file)
+async def handle_unsupported_requested_upload(message: Message) -> None:
+    await message.answer(
+        texts.DOC_UNSUPPORTED_CONTENT.format(allowed_mime="pdf/jpg/png/doc/docx")
+    )
 
 
 @router.callback_query(DocUploadStates.uploading, F.data.startswith("doc:skip:"))
@@ -241,3 +282,162 @@ async def handle_document_skip(
     if target is None:
         return
     await _advance(target, state, session, application_id, callback.bot)
+
+
+async def offer_doc_to_replace(
+    message: Message, state: FSMContext, session: AsyncSession, application_id: int
+) -> None:
+    docs = await get_documents_for_application(session, application_id)
+    if not docs:
+        await message.answer(texts.DOC_NO_DOCS_TO_REPLACE)
+        await start_doc_upload(message, state, session, application_id)
+        return
+
+    builder = InlineKeyboardBuilder()
+    for doc in docs:
+        req_title = doc.requirement.title if doc.requirement else f"#{doc.requirement_id}"
+        builder.button(
+            text=f"{req_title} — {doc.status.value}",
+            callback_data=f"candidate:replace:{application_id}:{doc.requirement_id}",
+        )
+    builder.adjust(1)
+    await message.answer(texts.DOC_CHOOSE_TO_REPLACE, reply_markup=builder.as_markup())
+
+
+@router.callback_query(F.data.startswith("candidate:replace:"))
+async def start_replace_doc(
+    callback: CallbackQuery, state: FSMContext, session: AsyncSession
+) -> None:
+    parts = callback.data.split(":")  # type: ignore[union-attr]
+    app_id = int(parts[2])
+    req_id = int(parts[3])
+
+    result = await session.execute(
+        sa_select(DocumentRequirement).where(DocumentRequirement.id == req_id)
+    )
+    req = result.scalar_one_or_none()
+    if not req:
+        await callback.answer(texts.ERROR_GENERIC)
+        return
+
+    await state.set_state(DocRequestUploadStates.waiting_file)
+    await state.update_data(application_id=app_id, requirement_id=req_id)
+    if callback.message:
+        await callback.message.answer(
+            texts.DOC_REQUEST_UPLOAD_PROMPT.format(title=req.title),
+            parse_mode="HTML",
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("candidate:req_doc:"))
+async def start_requested_doc_upload(
+    callback: CallbackQuery, state: FSMContext, session: AsyncSession
+) -> None:
+    parts = callback.data.split(":")  # type: ignore[union-attr]
+    app_id = int(parts[2])
+    req_id = int(parts[3])
+
+    result = await session.execute(
+        sa_select(DocumentRequirement).where(DocumentRequirement.id == req_id)
+    )
+    req = result.scalar_one_or_none()
+    if not req:
+        await callback.answer(texts.ERROR_GENERIC)
+        return
+
+    await state.set_state(DocRequestUploadStates.waiting_file)
+    await state.update_data(application_id=app_id, requirement_id=req_id)
+    if callback.message:
+        await callback.message.answer(
+            texts.DOC_REQUEST_UPLOAD_PROMPT.format(title=req.title),
+            parse_mode="HTML",
+        )
+    await callback.answer()
+
+
+@router.message(DocRequestUploadStates.waiting_file, F.document | F.photo)
+async def handle_requested_doc_upload(
+    message: Message, state: FSMContext, session: AsyncSession
+) -> None:
+    data = await state.get_data()
+    application_id: int = data["application_id"]
+    requirement_id: int = data["requirement_id"]
+
+    app = await get_application(session, application_id)
+    if not app:
+        await message.answer(texts.ERROR_GENERIC)
+        await state.clear()
+        return
+
+    result = await session.execute(
+        sa_select(DocumentRequirement).where(DocumentRequirement.id == requirement_id)
+    )
+    req = result.scalar_one_or_none()
+    if not req:
+        await message.answer(texts.ERROR_GENERIC)
+        await state.clear()
+        return
+
+    if message.document:
+        file_id = message.document.file_id
+        file_name = message.document.file_name or f"doc_{requirement_id}"
+        mime = message.document.mime_type or ""
+        size = message.document.file_size or 0
+    elif message.photo:
+        photo = message.photo[-1]
+        file_id = photo.file_id
+        file_name = f"photo_{requirement_id}.jpg"
+        mime = "image/jpeg"
+        size = photo.file_size or 0
+    else:
+        return
+
+    if size > TELEGRAM_DOWNLOAD_LIMIT_BYTES:
+        await message.answer(texts.DOC_TOO_LARGE_FOR_TG)
+        return
+
+    error = validate_file(mime, size, req.allowed_mime, req.max_size_mb, filename=file_name)
+    if error == "mime":
+        await message.answer(texts.DOC_INVALID_MIME.format(allowed_mime=req.allowed_mime))
+        return
+    if error == "size":
+        await message.answer(texts.DOC_TOO_LARGE.format(max_size=req.max_size_mb))
+        return
+
+    file_path = await save_tg_file(
+        bot=message.bot,  # type: ignore[arg-type]
+        file_id=file_id,
+        user_id=app.user_id,
+        application_id=application_id,
+        req_code=req.code,
+        filename=file_name,
+    )
+    await save_document(
+        session,
+        application_id=application_id,
+        requirement_id=requirement_id,
+        file_path=str(file_path),
+        tg_file_id=file_id,
+        original_name=file_name,
+        mime=mime,
+        size_bytes=size,
+    )
+
+    await message.answer(
+        texts.DOC_REQUEST_ACCEPTED.format(title=req.title),
+        reply_markup=candidate_main_menu(True),
+    )
+
+    staff = await get_all_staff(session)
+    await session.refresh(app, ["user"])
+    for hr_user in staff:
+        await notifications.notify_user(
+            bot=message.bot,  # type: ignore[arg-type]
+            tg_id=hr_user.tg_id,
+            text=texts.NOTIFY_NEW_DOCS.format(
+                full_name=app.user.full_name or "—", app_id=application_id
+            ),
+        )
+
+    await state.clear()

@@ -164,7 +164,7 @@ def upgrade() -> None:
         (2, 'passport', 'Паспорт (главная страница + прописка)', 1, 'pdf,jpg,jpeg,png', 10, 0),
         (2, 'snils', 'СНИЛС', 1, 'pdf,jpg,jpeg,png', 5, 1),
         (2, 'student_id', 'Студенческий билет', 1, 'pdf,jpg,jpeg,png', 5, 2),
-        (2, 'practice_direction', 'Направление от учебного заведения', 1, 'pdf,docx', 10, 3),
+        (2, 'practice_direction', 'Направление от учебного заведения', 1, 'pdf,doc,docx', 10, 3),
         (2, 'photo', 'Фото 3x4', 1, 'jpg,jpeg,png', 5, 4)
     """)
 

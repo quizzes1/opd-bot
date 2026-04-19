@@ -9,17 +9,24 @@ CAPTION_LIMIT = 1024
 
 
 async def notify_user(
-    bot: Bot, tg_id: int, text: str, document: Any = None, _retried: bool = False
+    bot: Bot,
+    tg_id: int,
+    text: str,
+    document: Any = None,
+    reply_markup: Any = None,
+    _retried: bool = False,
 ) -> bool:
     try:
         if document is not None:
             if len(text) <= CAPTION_LIMIT:
-                await bot.send_document(tg_id, document, caption=text, parse_mode="HTML")
+                await bot.send_document(
+                    tg_id, document, caption=text, parse_mode="HTML", reply_markup=reply_markup
+                )
             else:
                 await bot.send_message(tg_id, text, parse_mode="HTML")
-                await bot.send_document(tg_id, document)
+                await bot.send_document(tg_id, document, reply_markup=reply_markup)
         else:
-            await bot.send_message(tg_id, text, parse_mode="HTML")
+            await bot.send_message(tg_id, text, parse_mode="HTML", reply_markup=reply_markup)
         return True
     except TelegramForbiddenError:
         logger.warning("Cannot send message to {}: bot blocked", tg_id)
@@ -30,7 +37,7 @@ async def notify_user(
             return False
         logger.warning("RetryAfter {}s for {}, waiting", e.retry_after, tg_id)
         await asyncio.sleep(e.retry_after)
-        return await notify_user(bot, tg_id, text, document, _retried=True)
+        return await notify_user(bot, tg_id, text, document, reply_markup, _retried=True)
     except Exception as e:
         logger.error("Failed to notify {}: {}", tg_id, e)
         return False

@@ -1,24 +1,92 @@
 import re
 from pathlib import Path
 
-PHONE_RE = re.compile(r"^\+?[78]?\d{10}$")
+# Strict: +7 then exactly 10 digits.
+PHONE_RE = re.compile(r"^\+7\d{10}$")
+
+# Student FIO: 2-3 cyrillic words, hyphens allowed inside a word.
+FULL_NAME_RE = re.compile(
+    r"^[А-ЯЁа-яё]+(?:-[А-ЯЁа-яё]+)?(?:\s[А-ЯЁа-яё]+(?:-[А-ЯЁа-яё]+)?){1,2}$"
+)
+
+# Supervisor FIO: exactly 3 cyrillic words, hyphens allowed.
+SUPERVISOR_FIO_RE = re.compile(
+    r"^[А-ЯЁа-яё]+(?:-[А-ЯЁа-яё]+)?"
+    r"(?:\s[А-ЯЁа-яё]+(?:-[А-ЯЁа-яё]+)?){2}$"
+)
+
+# Catalog doc code
+CATALOG_CODE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 def normalize_phone(text: str) -> str:
-    return re.sub(r"[^\d+]", "", text)
+    digits = re.sub(r"[^\d]", "", text or "")
+    if digits.startswith("8") and len(digits) == 11:
+        digits = "7" + digits[1:]
+    if len(digits) == 10:
+        digits = "7" + digits
+    if digits:
+        return "+" + digits
+    return ""
 
 
 def validate_phone(text: str) -> str | None:
-    normalized = normalize_phone(text)
+    normalized = normalize_phone(text or "")
     if not PHONE_RE.match(normalized):
         return None
-    if normalized.startswith("8"):
-        normalized = "+7" + normalized[1:]
-    elif normalized.startswith("7"):
-        normalized = "+" + normalized
-    elif not normalized.startswith("+"):
-        normalized = "+7" + normalized
     return normalized
+
+
+def validate_full_name(text: str) -> str | None:
+    s = (text or "").strip()
+    s = re.sub(r"\s+", " ", s)
+    if not FULL_NAME_RE.match(s):
+        return None
+    return " ".join(w.capitalize() for w in s.split(" "))
+
+
+def validate_supervisor_fio(text: str) -> str | None:
+    s = (text or "").strip()
+    s = re.sub(r"\s+", " ", s)
+    if not SUPERVISOR_FIO_RE.match(s):
+        return None
+    return " ".join(w.capitalize() for w in s.split(" "))
+
+
+def validate_catalog_code(text: str) -> str | None:
+    s = (text or "").strip().lower()
+    if not CATALOG_CODE_RE.match(s):
+        return None
+    return s
+
+
+# Registry of file formats the system understands.
+ALLOWED_FORMATS_REGISTRY: set[str] = {
+    "pdf",
+    "jpg",
+    "jpeg",
+    "png",
+    "doc",
+    "docx",
+}
+
+
+def parse_allowed_formats(text: str) -> tuple[list[str], list[str]]:
+    """Split a user-entered list of extensions into (accepted, unknown)."""
+    raw = [t.strip().lower().lstrip(".") for t in (text or "").split(",")]
+    raw = [t for t in raw if t]
+    accepted: list[str] = []
+    unknown: list[str] = []
+    seen: set[str] = set()
+    for ext in raw:
+        norm = "jpg" if ext == "jpeg" else ext
+        if norm in ALLOWED_FORMATS_REGISTRY:
+            if norm not in seen:
+                accepted.append(norm)
+                seen.add(norm)
+        else:
+            unknown.append(ext)
+    return accepted, unknown
 
 
 MIME_TO_EXT = {

@@ -32,6 +32,7 @@ class HrCatalogStates(StatesGroup):
     waiting_doc_code = State()
     waiting_doc_mime = State()
     waiting_doc_size = State()
+    waiting_doc_required = State()
 
 
 class HrRequestDocStates(StatesGroup):

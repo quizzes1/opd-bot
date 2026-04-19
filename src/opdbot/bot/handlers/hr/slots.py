@@ -11,7 +11,12 @@ from opdbot.bot.keyboards.hr import slot_kind_keyboard
 from opdbot.bot.keyboards.main_menu import cancel_reply_keyboard, hr_main_menu
 from opdbot.bot.states.hr import HrSlotStates
 from opdbot.db.models import SlotKind, UserRole
-from opdbot.db.repo.slots import create_slot, deactivate_slot, list_slots
+from opdbot.db.repo.slots import (
+    create_slot,
+    deactivate_slot,
+    find_overlapping_slot,
+    list_slots,
+)
 
 router = Router(name="hr_slots")
 
@@ -104,10 +109,11 @@ async def hr_slot_date(message: Message, state: FSMContext) -> None:
 async def hr_slot_duration(message: Message, state: FSMContext) -> None:
     try:
         minutes = int((message.text or "").strip())
-        if minutes <= 0:
-            raise ValueError
     except ValueError:
-        await message.answer(texts.HR_SLOT_BAD_MINUTES)
+        await message.answer(texts.HR_SLOT_BAD_DURATION)
+        return
+    if minutes < 1 or minutes > 480:
+        await message.answer(texts.HR_SLOT_BAD_DURATION)
         return
     await state.update_data(slot_duration_minutes=minutes)
     await state.set_state(HrSlotStates.waiting_capacity)
@@ -118,10 +124,11 @@ async def hr_slot_duration(message: Message, state: FSMContext) -> None:
 async def hr_slot_capacity(message: Message, state: FSMContext, session: AsyncSession) -> None:
     try:
         capacity = int((message.text or "").strip())
-        if capacity <= 0:
-            raise ValueError
     except ValueError:
-        await message.answer(texts.HR_SLOT_BAD_CAPACITY)
+        await message.answer(texts.HR_SLOT_BAD_CAPACITY_RANGE)
+        return
+    if capacity < 1 or capacity > 100:
+        await message.answer(texts.HR_SLOT_BAD_CAPACITY_RANGE)
         return
 
     data = await state.get_data()
@@ -130,6 +137,20 @@ async def hr_slot_capacity(message: Message, state: FSMContext, session: AsyncSe
     duration = int(data["slot_duration_minutes"])
     ends_at = starts_at + timedelta(minutes=duration)
     kind = SLOT_KIND_MAP[kind_str]
+
+    overlap = await find_overlapping_slot(session, kind, starts_at, ends_at)
+    if overlap is not None:
+        await message.answer(
+            texts.HR_SLOT_OVERLAPS.format(
+                existing=(
+                    f"#{overlap.id} "
+                    f"{overlap.starts_at.strftime('%d.%m.%Y %H:%M')}"
+                )
+            )
+        )
+        await state.clear()
+        await message.answer(texts.HR_WELCOME, reply_markup=hr_main_menu())
+        return
 
     slot = await create_slot(session, kind=kind, starts_at=starts_at, ends_at=ends_at, capacity=capacity)
     kind_label = texts.SLOT_KIND_LABELS.get(kind_str, kind_str)

@@ -13,13 +13,15 @@ from opdbot.bot.handlers.candidate.scheduling import (
 )
 from opdbot.bot.keyboards.goals import goals_keyboard
 from opdbot.bot.keyboards.main_menu import candidate_main_menu
-from opdbot.bot.states.candidate import OnboardingStates
-from opdbot.db.models import ApplicationStatus, AuditLog, Goal
+from opdbot.bot.states.candidate import EditAppStates, OnboardingStates
+from opdbot.utils.validators import validate_full_name, validate_phone
+from opdbot.db.models import ApplicationStatus, AuditLog, Goal, SlotKind
 from opdbot.db.repo.applications import (
     get_active_application,
     get_user_applications,
     update_application_status,
 )
+from opdbot.db.repo.slots import free_slot_by_start
 from opdbot.db.repo.users import get_user_by_tg_id
 
 router = Router(name="status")
@@ -32,7 +34,9 @@ def _app_row_keyboard(app_id: int, status: ApplicationStatus) -> InlineKeyboardB
         ApplicationStatus.rejected,
         ApplicationStatus.cancelled,
     ):
+        builder.button(text="✏️ Изменить данные", callback_data=f"candidate:edit:{app_id}")
         builder.button(text="❌ Отменить заявку", callback_data=f"candidate:cancel:{app_id}")
+    builder.adjust(1)
     return builder
 
 
@@ -102,6 +106,15 @@ async def cancel_application(
         await callback.answer("Эту заявку нельзя отменить.")
         return
 
+    if app.interview_at:
+        await free_slot_by_start(session, SlotKind.interview, app.interview_at)
+        app.interview_at = None
+    if app.training_at:
+        await free_slot_by_start(session, SlotKind.training, app.training_at)
+        app.training_at = None
+    if app.medical_at:
+        await free_slot_by_start(session, SlotKind.medical, app.medical_at)
+        app.medical_at = None
     await update_application_status(session, app, ApplicationStatus.cancelled)
     session.add(
         AuditLog(
@@ -114,6 +127,10 @@ async def cancel_application(
     if callback.message:
         await callback.message.edit_text(
             texts.APPLICATION_CANCELLED.format(app_id=app_id),
+        )
+        await callback.message.answer(
+            texts.MAIN_MENU,
+            reply_markup=candidate_main_menu(False),
         )
 
 
@@ -177,4 +194,145 @@ async def change_documents(message: Message, state: FSMContext, session: AsyncSe
     if app is None:
         await message.answer(texts.ERROR_NO_ACTIVE_APPLICATION)
         return
-    await start_doc_upload(message, state, session, app.id)
+    from opdbot.bot.handlers.candidate.docs import offer_doc_to_replace
+
+    await offer_doc_to_replace(message, state, session, app.id)
+
+
+_EDITABLE_STATUSES = (
+    ApplicationStatus.draft,
+    ApplicationStatus.docs_in_progress,
+    ApplicationStatus.docs_submitted,
+)
+
+
+@router.callback_query(F.data.startswith("candidate:edit:"))
+async def edit_application(
+    callback: CallbackQuery, state: FSMContext, session: AsyncSession
+) -> None:
+    app_id = int(callback.data.split(":")[2])  # type: ignore[union-attr]
+    tg_user = callback.from_user
+    if tg_user is None:
+        return
+    user = await get_user_by_tg_id(session, tg_user.id)
+    if not user:
+        await callback.answer("Пользователь не найден.")
+        return
+    apps = await get_user_applications(session, user.id)
+    app = next((a for a in apps if a.id == app_id), None)
+    if not app:
+        await callback.answer("Заявка не найдена.")
+        return
+    if app.status not in _EDITABLE_STATUSES:
+        await callback.answer(texts.EDIT_APP_NOT_EDITABLE, show_alert=True)
+        return
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text=texts.EDIT_APP_FIELD_NAME, callback_data=f"candidate:edit_f:{app_id}:name")
+    builder.button(text=texts.EDIT_APP_FIELD_PHONE, callback_data=f"candidate:edit_f:{app_id}:phone")
+    builder.button(text=texts.EDIT_APP_FIELD_GOAL, callback_data=f"candidate:edit_f:{app_id}:goal")
+    builder.adjust(1)
+
+    if callback.message:
+        await callback.message.answer(
+            texts.EDIT_APP_MENU.format(app_id=app_id),
+            reply_markup=builder.as_markup(),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("candidate:edit_f:"))
+async def edit_field_start(
+    callback: CallbackQuery, state: FSMContext, session: AsyncSession
+) -> None:
+    parts = callback.data.split(":")  # type: ignore[union-attr]
+    app_id = int(parts[2])
+    field = parts[3]
+
+    await state.update_data(app_id=app_id)
+    if field == "name":
+        await state.set_state(EditAppStates.waiting_name)
+        prompt = "Введите новое ФИО:"
+    elif field == "phone":
+        await state.set_state(EditAppStates.waiting_phone)
+        prompt = "Введите новый телефон (+7XXXXXXXXXX):"
+    elif field == "goal":
+        result = await session.execute(select(Goal).where(Goal.is_active.is_(True)))
+        goals = list(result.scalars().all())
+        await state.set_state(EditAppStates.waiting_goal)
+        if callback.message:
+            await callback.message.answer(texts.ASK_GOAL, reply_markup=goals_keyboard(goals))
+        await callback.answer()
+        return
+    else:
+        await callback.answer()
+        return
+
+    if callback.message:
+        await callback.message.answer(prompt)
+    await callback.answer()
+
+
+@router.message(EditAppStates.waiting_name)
+async def edit_name_save(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    name = validate_full_name(message.text or "")
+    if name is None:
+        await message.answer(texts.BAD_FULL_NAME)
+        return
+    tg_user = message.from_user
+    if tg_user is None:
+        return
+    user = await get_user_by_tg_id(session, tg_user.id)
+    if user:
+        user.full_name = name
+        await session.flush()
+    await message.answer(texts.EDIT_APP_UPDATED, reply_markup=candidate_main_menu(True))
+    await state.clear()
+
+
+@router.message(EditAppStates.waiting_phone)
+async def edit_phone_save(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    phone = validate_phone(message.text or "")
+    if phone is None:
+        await message.answer(texts.BAD_PHONE)
+        return
+    tg_user = message.from_user
+    if tg_user is None:
+        return
+    user = await get_user_by_tg_id(session, tg_user.id)
+    if user:
+        user.phone = phone
+        await session.flush()
+    await message.answer(texts.EDIT_APP_UPDATED, reply_markup=candidate_main_menu(True))
+    await state.clear()
+
+
+@router.callback_query(EditAppStates.waiting_goal, F.data.startswith("goal:"))
+async def edit_goal_save(
+    callback: CallbackQuery, state: FSMContext, session: AsyncSession
+) -> None:
+    goal_id = int(callback.data.split(":")[1])  # type: ignore[union-attr]
+    data = await state.get_data()
+    app_id: int = data["app_id"]
+
+    tg_user = callback.from_user
+    if tg_user is None:
+        return
+    user = await get_user_by_tg_id(session, tg_user.id)
+    if not user:
+        await callback.answer("Пользователь не найден.")
+        return
+    apps = await get_user_applications(session, user.id)
+    app = next((a for a in apps if a.id == app_id), None)
+    if not app:
+        await callback.answer("Заявка не найдена.")
+        return
+    app.goal_id = goal_id
+    await session.flush()
+
+    if callback.message:
+        await callback.message.answer(
+            texts.EDIT_APP_UPDATED, reply_markup=candidate_main_menu(True)
+        )
+    await callback.answer()
+    await state.clear()

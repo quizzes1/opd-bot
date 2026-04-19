@@ -5,7 +5,11 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.base import BaseStorage
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BotCommand
+from aiogram.types import (
+    BotCommand,
+    BotCommandScopeChat,
+    BotCommandScopeDefault,
+)
 from aiohttp import web
 from loguru import logger
 
@@ -62,16 +66,30 @@ def register_routers(dp: Dispatcher) -> None:
 
 
 async def setup_bot_commands(bot: Bot) -> None:
-    commands = [
+    base = [
         BotCommand(command="start", description="Запустить / перезапустить бота"),
         BotCommand(command="help", description="Справка и список команд"),
         BotCommand(command="cancel", description="Отменить текущее действие"),
     ]
+    # Default scope (visible to everyone): no admin commands.
+    await bot.set_my_commands(base, scope=BotCommandScopeDefault())
+
+    # Per-superadmin scope: add /grant_hr and, in dev, /switch_role.
+    super_commands = list(base) + [
+        BotCommand(command="grant_hr", description="Выдать роль HR по tg_id"),
+    ]
     if settings.dev_mode:
-        commands.append(
+        super_commands.append(
             BotCommand(command="switch_role", description="DEV: сменить роль")
         )
-    await bot.set_my_commands(commands)
+
+    for tg_id in settings.superadmin_tg_ids:
+        try:
+            await bot.set_my_commands(
+                super_commands, scope=BotCommandScopeChat(chat_id=tg_id)
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to set commands for superadmin {}: {}", tg_id, e)
 
 
 async def _health(_: web.Request) -> web.Response:

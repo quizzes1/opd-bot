@@ -1,8 +1,28 @@
+import logging
 import sys
 
 from loguru import logger
 
 from opdbot.config import settings
+
+
+class InterceptHandler(logging.Handler):
+    """Redirect stdlib logging records into loguru."""
+
+    def emit(self, record: logging.LogRecord) -> None:  # type: ignore[override]
+        try:
+            level = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+
+        frame, depth = logging.currentframe(), 2
+        while frame and frame.f_code.co_filename == logging.__file__:
+            frame = frame.f_back
+            depth += 1
+
+        logger.opt(depth=depth, exception=record.exc_info).log(
+            level, record.getMessage()
+        )
 
 
 def setup_logging() -> None:
@@ -26,4 +46,24 @@ def setup_logging() -> None:
         retention="7 days",
         compression="zip",
         encoding="utf-8",
+        format=(
+            "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | "
+            "{name}:{function}:{line} - {message}"
+        ),
     )
+
+    logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
+    for name in (
+        "aiogram",
+        "aiogram.event",
+        "aiogram.dispatcher",
+        "aiogram.fsm",
+        "sqlalchemy.engine",
+        "alembic",
+        "httpx",
+        "httpcore",
+        "aiohttp.access",
+    ):
+        lg = logging.getLogger(name)
+        lg.handlers = [InterceptHandler()]
+        lg.propagate = False

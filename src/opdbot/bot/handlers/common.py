@@ -39,6 +39,7 @@ async def cmd_start(message: Message, state: FSMContext, session: AsyncSession, 
         role = UserRole.admin
 
     if role in (UserRole.hr, UserRole.admin):
+        # suppress candidate-only onboarding for HR/admin
         await message.answer(texts.HR_WELCOME, reply_markup=hr_main_menu())
         return
 
@@ -58,8 +59,18 @@ async def cmd_start(message: Message, state: FSMContext, session: AsyncSession, 
 
 
 @router.message(Command("help"))
-async def cmd_help(message: Message) -> None:
-    await message.answer(texts.HELP_TEXT, parse_mode="HTML")
+async def cmd_help(message: Message, role: UserRole) -> None:
+    tg_user = message.from_user
+    is_super = (
+        tg_user is not None and tg_user.id in settings.superadmin_tg_ids
+    )
+    if is_super:
+        text = texts.HELP_TEXT_SUPERADMIN
+    elif role in (UserRole.hr, UserRole.admin):
+        text = texts.HELP_TEXT_HR
+    else:
+        text = texts.HELP_TEXT_CANDIDATE
+    await message.answer(text, parse_mode="HTML")
 
 
 @router.message(Command("cancel"))
@@ -115,6 +126,7 @@ async def cmd_switch_role(
     message: Message, state: FSMContext, session: AsyncSession
 ) -> None:
     if not settings.dev_mode:
+        await message.answer(texts.SWITCH_ROLE_PROD_DISABLED)
         return
     tg_user = message.from_user
     if tg_user is None:

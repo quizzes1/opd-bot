@@ -20,6 +20,14 @@ router = Router(name="scheduling")
 async def start_interview_scheduling(
     message: Message, state: FSMContext, session: AsyncSession, application_id: int
 ) -> None:
+    app = await get_application(session, application_id)
+    if app and app.interview_at:
+        dt_str = app.interview_at.strftime("%d.%m.%Y %H:%M")
+        await message.answer(
+            f"Вы уже записаны на собеседование: {dt_str}.",
+            reply_markup=candidate_main_menu(True),
+        )
+        return
     slots = await get_available_slots(session, SlotKind.interview, from_dt=datetime.now())
     if not slots:
         await message.answer(texts.NO_SLOTS_AVAILABLE)

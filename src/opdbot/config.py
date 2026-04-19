@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from pydantic import field_validator
@@ -25,8 +26,23 @@ class Settings(BaseSettings):
     @field_validator("superadmin_tg_ids", mode="before")
     @classmethod
     def parse_tg_ids(cls, v: object) -> list[int]:
+        if v is None or v == "":
+            return []
+        if isinstance(v, int):
+            return [v]
         if isinstance(v, str):
-            return [int(x.strip()) for x in v.split(",") if x.strip()]
+            s = v.strip()
+            if not s:
+                return []
+            if s.startswith("["):
+                try:
+                    parsed = json.loads(s)
+                    return [int(x) for x in parsed]
+                except (ValueError, TypeError):
+                    pass
+            return [int(x.strip()) for x in s.split(",") if x.strip()]
+        if isinstance(v, (list, tuple)):
+            return [int(x) for x in v]
         return v  # type: ignore[return-value]
 
 
