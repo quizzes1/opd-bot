@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from opdbot.bot import texts
+from opdbot.utils.dates import fmt_date
 from opdbot.bot.keyboards.main_menu import cancel_reply_keyboard, hr_main_menu
 from opdbot.bot.states.hr import HrCharacteristicStates, HrMedicalDateStates
 from opdbot.db.models import (
@@ -273,7 +274,7 @@ async def hr_show_generated_docs(
     for gd in gen_docs:
         label = GEN_DOC_LABELS.get(gd.kind.value, gd.kind.value)
         builder.button(
-            text=f"📥 {label} ({gd.created_at.strftime('%d.%m.%Y')})",
+            text=f"📥 {label} ({fmt_date(gd.created_at)})",
             callback_data=f"hr:dl_gendoc:{gd.id}",
         )
     builder.button(text="◀️ Назад", callback_data=f"hr:app:{app_id}")

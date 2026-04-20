@@ -13,6 +13,7 @@ from opdbot.db.models import SlotKind
 from opdbot.db.repo.applications import get_application, set_interview_slot, set_training_slot
 from opdbot.db.repo.slots import book_slot, get_available_slots
 from opdbot.db.repo.users import get_user_by_tg_id
+from opdbot.utils.dates import fmt_datetime
 
 router = Router(name="scheduling")
 
@@ -22,7 +23,7 @@ async def start_interview_scheduling(
 ) -> None:
     app = await get_application(session, application_id)
     if app and app.interview_at:
-        dt_str = app.interview_at.strftime("%d.%m.%Y %H:%M")
+        dt_str = fmt_datetime(app.interview_at)
         await message.answer(
             f"Вы уже записаны на собеседование: {dt_str}.",
             reply_markup=candidate_main_menu(True),
@@ -78,7 +79,7 @@ async def handle_interview_slot(
         await set_interview_slot(session, app, slot.starts_at)
 
     await state.clear()
-    dt_str = slot.starts_at.strftime("%d.%m.%Y %H:%M")
+    dt_str = fmt_datetime(slot.starts_at)
     await callback.message.edit_text(  # type: ignore[union-attr]
         texts.SLOT_BOOKED.format(kind="собеседование", dt=dt_str),
         parse_mode="HTML",
@@ -110,7 +111,7 @@ async def handle_training_slot(
         await set_training_slot(session, app, slot.starts_at)
 
     await state.clear()
-    dt_str = slot.starts_at.strftime("%d.%m.%Y %H:%M")
+    dt_str = fmt_datetime(slot.starts_at)
     await callback.message.edit_text(  # type: ignore[union-attr]
         texts.SLOT_BOOKED.format(kind="обучение", dt=dt_str),
         parse_mode="HTML",

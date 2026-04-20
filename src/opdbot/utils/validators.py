@@ -20,19 +20,16 @@ CATALOG_CODE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 def normalize_phone(text: str) -> str:
-    digits = re.sub(r"[^\d]", "", text or "")
-    if digits.startswith("8") and len(digits) == 11:
-        digits = "7" + digits[1:]
-    if len(digits) == 10:
-        digits = "7" + digits
-    if digits:
-        return "+" + digits
-    return ""
+    """Strip only whitespace/hyphens/parens; other chars survive and will fail regex."""
+    s = re.sub(r"[\s\-()]", "", text or "")
+    if re.fullmatch(r"8\d{10}", s):
+        s = "+7" + s[1:]
+    return s
 
 
 def validate_phone(text: str) -> str | None:
     normalized = normalize_phone(text or "")
-    if not PHONE_RE.match(normalized):
+    if not PHONE_RE.fullmatch(normalized):
         return None
     return normalized
 

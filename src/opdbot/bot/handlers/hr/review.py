@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from opdbot.bot import texts
+from opdbot.utils.dates import fmt_datetime
 from opdbot.bot.keyboards.hr import document_actions_keyboard, request_doc_keyboard
 from opdbot.bot.keyboards.main_menu import cancel_reply_keyboard, hr_main_menu
 from opdbot.bot.states.hr import HrMessageStates, HrRejectDocStates, HrRequestDocStates
@@ -535,7 +536,7 @@ async def hr_set_interview_start(
 
     builder = InlineKeyboardBuilder()
     for slot in slots:
-        dt = slot.starts_at.strftime("%d.%m.%Y %H:%M")
+        dt = fmt_datetime(slot.starts_at)
         free = slot.capacity - slot.booked_count
         builder.button(
             text=f"{dt} (свободно {free}/{slot.capacity})",
@@ -584,7 +585,7 @@ async def hr_pick_interview(
     )
 
     await session.refresh(app, ["user"])
-    dt_str = slot.starts_at.strftime("%d.%m.%Y %H:%M")
+    dt_str = fmt_datetime(slot.starts_at)
     await notifications.notify_user(
         bot=callback.bot,  # type: ignore[arg-type]
         tg_id=app.user.tg_id,

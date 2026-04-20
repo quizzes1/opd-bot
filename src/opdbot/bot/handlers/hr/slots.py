@@ -11,6 +11,7 @@ from opdbot.bot.keyboards.hr import slot_kind_keyboard
 from opdbot.bot.keyboards.main_menu import cancel_reply_keyboard, hr_main_menu
 from opdbot.bot.states.hr import HrSlotStates
 from opdbot.db.models import SlotKind, UserRole
+from opdbot.utils.dates import fmt_datetime
 from opdbot.db.repo.slots import (
     create_slot,
     deactivate_slot,
@@ -47,7 +48,7 @@ async def hr_slots_menu(message: Message, role: UserRole, session: AsyncSession)
             sections.append(texts.HR_SLOT_GROUP_EMPTY)
             continue
         for slot in group:
-            dt = slot.starts_at.strftime("%d.%m.%Y %H:%M")
+            dt = fmt_datetime(slot.starts_at)
             free = slot.capacity - slot.booked_count
             sections.append(
                 texts.HR_SLOT_GROUP_LINE.format(
@@ -144,7 +145,7 @@ async def hr_slot_capacity(message: Message, state: FSMContext, session: AsyncSe
             texts.HR_SLOT_OVERLAPS.format(
                 existing=(
                     f"#{overlap.id} "
-                    f"{overlap.starts_at.strftime('%d.%m.%Y %H:%M')}"
+                    f"{fmt_datetime(overlap.starts_at)}"
                 )
             )
         )
@@ -154,7 +155,7 @@ async def hr_slot_capacity(message: Message, state: FSMContext, session: AsyncSe
 
     slot = await create_slot(session, kind=kind, starts_at=starts_at, ends_at=ends_at, capacity=capacity)
     kind_label = texts.SLOT_KIND_LABELS.get(kind_str, kind_str)
-    dt_str = starts_at.strftime("%d.%m.%Y %H:%M")
+    dt_str = fmt_datetime(starts_at)
     await message.answer(
         texts.HR_SLOT_CREATED.format(kind=kind_label, dt=dt_str),
         reply_markup=hr_main_menu(),

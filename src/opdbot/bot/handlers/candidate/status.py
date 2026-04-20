@@ -14,6 +14,7 @@ from opdbot.bot.handlers.candidate.scheduling import (
 from opdbot.bot.keyboards.goals import goals_keyboard
 from opdbot.bot.keyboards.main_menu import candidate_main_menu
 from opdbot.bot.states.candidate import EditAppStates, OnboardingStates
+from opdbot.utils.dates import fmt_date, fmt_datetime
 from opdbot.utils.validators import validate_full_name, validate_phone
 from opdbot.db.models import ApplicationStatus, AuditLog, Goal, SlotKind
 from opdbot.db.repo.applications import (
@@ -62,15 +63,15 @@ async def my_applications(message: Message, session: AsyncSession) -> None:
         interview_line = ""
         training_line = ""
         if app.interview_at:
-            interview_line = f"Собеседование: {app.interview_at.strftime('%d.%m.%Y %H:%M')}\n"
+            interview_line = f"Собеседование: {fmt_datetime(app.interview_at)}\n"
         if app.training_at:
-            training_line = f"Обучение: {app.training_at.strftime('%d.%m.%Y %H:%M')}\n"
+            training_line = f"Обучение: {fmt_datetime(app.training_at)}\n"
 
         text = texts.APPLICATION_CARD.format(
             app_id=app.id,
             goal=goal_label,
             status=status_label,
-            created_at=app.created_at.strftime("%d.%m.%Y"),
+            created_at=fmt_date(app.created_at),
             interview_line=interview_line,
             training_line=training_line,
         )
@@ -128,9 +129,10 @@ async def cancel_application(
         await callback.message.edit_text(
             texts.APPLICATION_CANCELLED.format(app_id=app_id),
         )
+        remaining_active = await get_active_application(session, user.id)
         await callback.message.answer(
             texts.MAIN_MENU,
-            reply_markup=candidate_main_menu(False),
+            reply_markup=candidate_main_menu(remaining_active is not None),
         )
 
 
@@ -249,19 +251,35 @@ async def edit_field_start(
     app_id = int(parts[2])
     field = parts[3]
 
+    tg_user = callback.from_user
+    if tg_user is None:
+        return
+    user = await get_user_by_tg_id(session, tg_user.id)
+    if not user:
+        await callback.answer("Пользователь не найден.")
+        return
+    apps = await get_user_applications(session, user.id)
+    app = next((a for a in apps if a.id == app_id), None)
+
     await state.update_data(app_id=app_id)
     if field == "name":
         await state.set_state(EditAppStates.waiting_name)
-        prompt = "Введите новое ФИО:"
+        current = user.full_name or "—"
+        prompt = f"Текущее ФИО: {current}\nВведите новое ФИО:"
     elif field == "phone":
         await state.set_state(EditAppStates.waiting_phone)
-        prompt = "Введите новый телефон (+7XXXXXXXXXX):"
+        current = user.phone or "—"
+        prompt = f"Текущий телефон: {current}\nВведите новый телефон (+7XXXXXXXXXX):"
     elif field == "goal":
         result = await session.execute(select(Goal).where(Goal.is_active.is_(True)))
         goals = list(result.scalars().all())
         await state.set_state(EditAppStates.waiting_goal)
+        current = app.goal.title if app and app.goal else "—"
         if callback.message:
-            await callback.message.answer(texts.ASK_GOAL, reply_markup=goals_keyboard(goals))
+            await callback.message.answer(
+                f"Текущая цель: {current}\n{texts.ASK_GOAL}",
+                reply_markup=goals_keyboard(goals),
+            )
         await callback.answer()
         return
     else:
@@ -330,9 +348,10 @@ async def edit_goal_save(
     app.goal_id = goal_id
     await session.flush()
 
-    if callback.message:
-        await callback.message.answer(
-            texts.EDIT_APP_UPDATED, reply_markup=candidate_main_menu(True)
-        )
     await callback.answer()
     await state.clear()
+    if callback.message:
+        await callback.message.answer(texts.EDIT_APP_UPDATED)
+        from opdbot.bot.handlers.candidate.docs import start_doc_upload
+
+        await start_doc_upload(callback.message, state, session, app.id)

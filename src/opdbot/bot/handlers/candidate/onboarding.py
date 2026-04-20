@@ -90,7 +90,6 @@ async def handle_goal_selected(
     application = await create_application(session, user_id=user.id, goal_id=goal_id)
 
     await state.clear()
-    await state.update_data(application_id=application.id)
 
     requirements = await get_requirements_for_goal(session, goal_id)
     docs_lines = [
@@ -107,5 +106,8 @@ async def handle_goal_selected(
         texts.GOAL_SELECTED.format(goal=goal.title, docs_list=docs_list),
         parse_mode="HTML",
     )
-    await callback.message.answer(texts.MAIN_MENU, reply_markup=candidate_main_menu(True))  # type: ignore[union-attr]
+
+    from opdbot.bot.handlers.candidate.docs import start_doc_upload
+
+    await start_doc_upload(callback.message, state, session, application.id)  # type: ignore[arg-type]
     await callback.answer()

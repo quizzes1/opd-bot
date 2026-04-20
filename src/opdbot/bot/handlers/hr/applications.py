@@ -9,6 +9,7 @@ from opdbot.bot.keyboards.hr import application_card_keyboard, applications_filt
 from opdbot.bot.keyboards.main_menu import cancel_reply_keyboard, hr_main_menu
 from opdbot.bot.states.hr import HrSearchStates
 from opdbot.db.models import ACTIVE_STATUSES, ApplicationStatus, UserRole
+from opdbot.utils.dates import fmt_date, fmt_datetime
 from opdbot.db.repo.applications import (
     get_application,
     list_applications,
@@ -119,9 +120,9 @@ async def hr_application_card(
     interview_line = ""
     training_line = ""
     if app.interview_at:
-        interview_line = f"Собеседование: {app.interview_at.strftime('%d.%m.%Y %H:%M')}\n"
+        interview_line = f"Собеседование: {fmt_datetime(app.interview_at)}\n"
     if app.training_at:
-        training_line = f"Обучение: {app.training_at.strftime('%d.%m.%Y %H:%M')}\n"
+        training_line = f"Обучение: {fmt_datetime(app.training_at)}\n"
 
     text = texts.HR_APPLICATION_CARD.format(
         app_id=app.id,
@@ -130,7 +131,7 @@ async def hr_application_card(
         phone=user.phone or "—",
         goal=goal_label,
         status=status_label,
-        created_at=app.created_at.strftime("%d.%m.%Y"),
+        created_at=fmt_date(app.created_at),
         interview_line=interview_line,
         training_line=training_line,
         hr_comment=app.hr_comment or "—",

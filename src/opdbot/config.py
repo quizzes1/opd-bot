@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     webhook_host: str = "0.0.0.0"
     webhook_port: int = 8080
     dev_mode: bool = False
+    timezone: str = "Europe/Moscow"
 
     @field_validator("superadmin_tg_ids", mode="before")
     @classmethod

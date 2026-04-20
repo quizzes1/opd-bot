@@ -2,12 +2,13 @@ from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from opdbot.db.models import Slot
+from opdbot.utils.dates import fmt_datetime
 
 
 def slots_keyboard(slots: list[Slot], kind: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for slot in slots:
-        dt_str = slot.starts_at.strftime("%d.%m.%Y %H:%M")
+        dt_str = fmt_datetime(slot.starts_at)
         free = slot.capacity - slot.booked_count
         builder.button(
             text=f"{dt_str} (мест: {free})",
