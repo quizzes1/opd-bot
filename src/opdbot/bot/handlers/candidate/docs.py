@@ -255,13 +255,6 @@ async def handle_unsupported_upload(message: Message, state: FSMContext, session
     )
 
 
-@router.message(DocRequestUploadStates.waiting_file)
-async def handle_unsupported_requested_upload(message: Message) -> None:
-    await message.answer(
-        texts.DOC_UNSUPPORTED_CONTENT.format(allowed_mime="pdf/jpg/png/doc/docx")
-    )
-
-
 @router.callback_query(DocUploadStates.uploading, F.data.startswith("doc:skip:"))
 async def handle_document_skip(
     callback: CallbackQuery, state: FSMContext, session: AsyncSession
@@ -441,3 +434,10 @@ async def handle_requested_doc_upload(
         )
 
     await state.clear()
+
+
+@router.message(DocRequestUploadStates.waiting_file)
+async def handle_unsupported_requested_upload(message: Message) -> None:
+    await message.answer(
+        texts.DOC_UNSUPPORTED_CONTENT.format(allowed_mime="pdf/jpg/png/doc/docx")
+    )
