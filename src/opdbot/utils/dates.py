@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from opdbot.config import settings
@@ -9,9 +9,11 @@ def _tz() -> ZoneInfo:
 
 
 def to_local(dt: datetime) -> datetime:
-    """Treat naive datetimes as UTC, convert to configured local tz."""
+    """Naive datetimes are assumed already in local tz (that's how the codebase
+    writes them — via datetime.now() and strptime). Only aware datetimes get
+    converted."""
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        return dt
     return dt.astimezone(_tz())
 
 
