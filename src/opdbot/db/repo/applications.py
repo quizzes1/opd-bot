@@ -115,7 +115,16 @@ async def list_applications(
 async def search_applications(
     session: AsyncSession, query: str, limit: int = 20
 ) -> list[Application]:
-    pattern = f"%{query.strip()}%"
+    raw = query.strip()
+    name_pattern = f"%{raw}%"
+    username_pattern = f"%{raw.lstrip('@')}%"
+    phone_pattern = f"%{''.join(ch for ch in raw if ch.isdigit())}%"
+    conditions = [
+        User.full_name.ilike(name_pattern),
+        User.tg_username.ilike(username_pattern),
+    ]
+    if phone_pattern != "%%":
+        conditions.append(User.phone.ilike(phone_pattern))
     stmt = (
         select(Application)
         .join(User, Application.user_id == User.id)
@@ -123,13 +132,7 @@ async def search_applications(
             selectinload(Application.user),
             selectinload(Application.goal),
         )
-        .where(
-            or_(
-                User.full_name.ilike(pattern),
-                User.tg_username.ilike(pattern),
-                User.phone.ilike(pattern),
-            )
-        )
+        .where(or_(*conditions))
         .order_by(Application.created_at.desc())
         .limit(limit)
     )

@@ -30,8 +30,10 @@ async def cmd_start(message: Message, state: FSMContext, session: AsyncSession, 
         session,
         tg_id=tg_user.id,
         tg_username=tg_user.username,
-        full_name=tg_user.full_name,
     )
+    if not created and user.tg_username != tg_user.username:
+        user.tg_username = tg_user.username
+        await session.flush()
 
     if tg_user.id in settings.superadmin_tg_ids and user.role != UserRole.admin:
         user.role = UserRole.admin
@@ -89,7 +91,6 @@ async def cmd_cancel(
                 session,
                 tg_id=tg_user.id,
                 tg_username=tg_user.username,
-                full_name=tg_user.full_name,
             )
             has_active = await get_active_application(session, user.id) is not None
         kb = candidate_main_menu(has_active)
@@ -137,7 +138,6 @@ async def cmd_switch_role(
         session,
         tg_id=tg_user.id,
         tg_username=tg_user.username,
-        full_name=tg_user.full_name,
     )
     new_role = UserRole.hr if user.role == UserRole.candidate else UserRole.candidate
     user = await set_user_role(session, tg_user.id, new_role)
